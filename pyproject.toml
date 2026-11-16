@@ -1,0 +1,15 @@
+[project]
+name = "geometric-deep-learning-cfd"
+version = "0.1.0"
+description = "Geometric deep learning experiments for CFD"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2",
+    "torch>=2.7",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.8",
+    "ty>=0.0.81",
+]
