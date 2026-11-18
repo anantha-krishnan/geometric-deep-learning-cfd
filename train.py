@@ -94,7 +94,7 @@ def main():
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=15)
     criterion = nn.MSELoss()
 
-    best_val_loss = float('inf')
+    best_drag_err = float('inf')
     best_model_weights = None
 
     print("\n--- Starting Model Training ---")
@@ -149,10 +149,11 @@ def main():
 
         scheduler.step(val_loss)
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        # Track drag accuracy directly:
+        if mean_drag_err < best_drag_err:
+            best_drag_err = mean_drag_err
             best_model_weights = copy.deepcopy(model.state_dict())
-            torch.save(best_model_weights, "milestone1_best_model.pt")
+            torch.save(best_model_weights, "milestone1_best_drag_model.pt")
 
         if epoch % 10 == 0 or epoch == 1:
             elapsed = time.perf_counter() - epoch_start
