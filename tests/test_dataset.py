@@ -6,7 +6,7 @@ import h5py
 import numpy as np
 import torch
 
-from dataset import load_all_starccm_designs
+from dataset import RunningStandardizer, load_all_starccm_designs
 
 
 class SurfaceDatasetTests(unittest.TestCase):
@@ -41,11 +41,24 @@ class SurfaceDatasetTests(unittest.TestCase):
         graph = graphs[0]
         self.assertEqual(tuple(graph["geom"].shape), (2, 7))
         np.testing.assert_allclose(graph["geom"][:, 6], [1, 2])
-        np.testing.assert_allclose(graph["fields"], [[10, 5, 1.2], [20, 2, 1.2]])
+        np.testing.assert_allclose(graph["fields"], [[10, 3], [20, 0]])
+        self.assertAlmostEqual(graph["rho"], 1.2, places=6)
+        self.assertAlmostEqual(graph["q_dyn"], 0.5 * 1.2 * 3**2, places=5)
+        np.testing.assert_allclose(graph["coeffs"], graph["fields"] / 5.4, rtol=1e-5)
         torch.testing.assert_close(
             graph["edge_index"], torch.tensor([[0, 1], [1, 0]])
         )
         self.assertEqual(graph["true_drag"], 4)
+
+    def test_standardizer_keeps_constant_channel_bounded(self):
+        scaler = RunningStandardizer()
+        data = torch.tensor([[1.0, 1.1841], [2.0, 1.1841], [3.0, 1.1841]] * 100)
+        scaler.fit([data])
+
+        normalized = scaler.transform(data)
+
+        self.assertLess(normalized[:, 1].abs().max().item(), 1e-3)
+        torch.testing.assert_close(scaler.inverse_transform(normalized), data)
 
 
 if __name__ == "__main__":

@@ -1,23 +1,20 @@
-import copy
-import time
+
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from torch import optim
 from torch.utils.data import DataLoader
 
 from dataset import (
-    load_all_starccm_designs,
-    RunningStandardizer,
     CFDSurfaceDataset,
-    collate_cfd_graphs
+    RunningStandardizer,
+    collate_cfd_graphs_with_physics,
+    load_all_starccm_designs,
 )
 from model import Milestone1_GNN
-from physics import compute_design_drag
+from physics import compute_batch_drag, compute_design_drag
 
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
-# Point to Training_Adaptive_Sampling directory
 DATA_DIR = r"AIROMMinimizingDragAroundAnAerodynamicBody_input/aero_body_3D_AI_ROM/Training_Adaptive_Sampling"
 
 BATCH_SIZE = 4
@@ -25,168 +22,134 @@ HIDDEN_DIM = 64
 NUM_LAYERS = 4
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-5
-NUM_EPOCHS = 100
+NUM_EPOCHS = 600
+# Fraction of epochs over which the drag loss ramps from 0 to LAMBDA_DRAG
+DRAG_WARMUP = 0.2
 
-def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Hardware backend: {device}")
+# Physics Loss Weight: balances field MSE and relative drag error
+LAMBDA_DRAG = 0.5
 
-    # 1. Load Data
-    raw_data = load_all_starccm_designs(DATA_DIR)
-    num_total = len(raw_data)
-    if num_total < 5:
-        raise ValueError(f"Found only {num_total} designs. Need at least 5 designs to run train/val/test splits.")
 
-    # 2. Train / Validation / Test Splits (80% / 10% / 10%)
-    n_train = max(1, int(num_total * 0.8))
-    n_val   = max(1, int(num_total * 0.1))
+NUM_FOLDS = 5
+SEED = 0
+# 0 = plain field MSE, 1 = fully weighted by each face's drag influence
+DRAG_WEIGHT_MIX = 0.0
+A_REF = 0.005
+EDGE_FEATURES = False
+GLOBAL_CONTEXT = True
+EDGE_DIM = 5
 
-    train_data = raw_data[:n_train]
-    val_data   = raw_data[n_train:n_train + n_val]
-    test_data  = raw_data[n_train + n_val:]
-    if len(test_data) == 0:
-        test_data = val_data  # fallback if total designs is small
 
-    print(f"Split sizes -> Train: {len(train_data)} | Val: {len(val_data)} | Test: {len(test_data)}")
-
-    # 3. Fit Standardizers on Training Data ONLY
+def fit_scalers(train_data):
     geom_scaler = RunningStandardizer()
     geom_scaler.fit([d['geom'] for d in train_data])
-
     params_scaler = RunningStandardizer()
     params_scaler.fit([d['params'].unsqueeze(0) for d in train_data])
+    coeffs_scaler = RunningStandardizer()
+    coeffs_scaler.fit([d['coeffs'] for d in train_data])
+    return geom_scaler, params_scaler, coeffs_scaler
 
-    fields_scaler = RunningStandardizer()
-    fields_scaler.fit([d['fields'] for d in train_data])
 
-    # Apply normalization
-    for split in [train_data, val_data, test_data]:
-        for item in split:
-            item['geom_norm'] = geom_scaler.transform(item['geom'])
-            item['params_norm'] = params_scaler.transform(item['params'].unsqueeze(0)).squeeze(0)
-            item['fields_norm'] = fields_scaler.transform(item['fields'])
+def normalize(data, scalers):
+    geom_scaler, params_scaler, coeffs_scaler = scalers
+    return [{
+        **item,
+        'geom_norm': geom_scaler.transform(item['geom']),
+        'params_norm': params_scaler.transform(item['params'].unsqueeze(0)).squeeze(0),
+        'fields_norm': coeffs_scaler.transform(item['coeffs']),
+    } for item in data]
 
-    # 4. DataLoader
-    train_norm_list = [{
-        'geom': d['geom_norm'],
-        'params': d['params_norm'],
-        'fields': d['fields_norm'],
-        'edge_index': d['edge_index']
-    } for d in train_data]
 
-    train_loader = DataLoader(
-        CFDSurfaceDataset(train_norm_list),
-        batch_size=min(BATCH_SIZE, len(train_norm_list)),
+def train_model(train_data, coeffs_scaler, device):
+    loader = DataLoader(
+        CFDSurfaceDataset(train_data),
+        batch_size=min(BATCH_SIZE, len(train_data)),
         shuffle=True,
-        collate_fn=collate_cfd_graphs
+        collate_fn=collate_cfd_graphs_with_physics
     )
-
-    # 5. Initialize Model, Loss, Optimizer
     model = Milestone1_GNN(
-        geom_dim=7,
-        design_dim=3,
-        hidden_dim=HIDDEN_DIM,
-        num_layers=NUM_LAYERS,
-        out_dim=3
+        geom_dim=7, design_dim=3, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS, out_dim=2,
+        edge_dim=EDGE_DIM if EDGE_FEATURES else 0, use_global=GLOBAL_CONTEXT
     ).to(device)
-
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=15)
-    criterion = nn.MSELoss()
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS, eta_min=LEARNING_RATE * 1e-2)
 
-    best_drag_err = float('inf')
-    best_model_weights = None
-
-    print("\n--- Starting Model Training ---")
-    for epoch in range(1, NUM_EPOCHS + 1):
-        epoch_start = time.perf_counter()
-        # ---------------- TRAINING ----------------
+    for epoch in range(NUM_EPOCHS):
+        lambda_drag = LAMBDA_DRAG * min(1.0, epoch / max(1, DRAG_WARMUP * NUM_EPOCHS))
         model.train()
-        train_loss = 0.0
-
-        for batch in train_loader:
-            geom = batch['geom'].to(device)
-            params = batch['params'].to(device)
-            edge_index = batch['edge_index'].to(device)
-            target = batch['fields'].to(device)
-
+        for batch in loader:
+            batch_idx = batch['batch_idx'].to(device)
             optimizer.zero_grad()
-            pred = model(geom, params, edge_index)
-            loss = criterion(pred, target)
+            pred_norm = model(
+                batch['geom_norm'].to(device), batch['params_norm'].to(device), batch['edge_index'].to(device),
+                batch['edge_attr'].to(device) if EDGE_FEATURES else None, batch_idx
+            )
+            weights = (1 - DRAG_WEIGHT_MIX) + DRAG_WEIGHT_MIX * batch['face_weights'].to(device)
+            loss_field = torch.mean(weights * (pred_norm - batch['fields_norm'].to(device)) ** 2)
+            pred_drags = compute_batch_drag(
+                pred_norm, batch['geom_raw'].to(device), batch_idx, batch['num_graphs'],
+                coeffs_scaler, batch['q_dyn'].to(device)
+            )
+            true_drags = batch['true_drags'].to(device)
+            # Relative error keeps slender (4 N) and bluff (120 N) designs equally weighted.
+            loss_drag = torch.mean(((pred_drags - true_drags) / true_drags) ** 2)
+            loss = loss_field + lambda_drag * loss_drag
             loss.backward()
             optimizer.step()
+        scheduler.step()
+    return model
 
-            train_loss += loss.item() * batch['num_graphs']
 
-        train_loss /= len(train_data)
-
-        # ---------------- VALIDATION ----------------
-        model.eval()
-        val_loss = 0.0
-        val_drag_errors = []
-
-        with torch.no_grad():
-            for item in val_data:
-                geom = item['geom_norm'].to(device)
-                params = item['params_norm'].to(device).unsqueeze(0).repeat(geom.size(0), 1)
-                edge_index = item['edge_index'].to(device)
-                target = item['fields_norm'].to(device)
-
-                pred_norm = model(geom, params, edge_index)
-                loss = criterion(pred_norm, target)
-                val_loss += loss.item()
-
-                # Reconstruct physical fields & compute drag
-                pred_phys = fields_scaler.inverse_transform(pred_norm.cpu())
-                drag_predicted = compute_design_drag(pred_phys, item['geom'])
-                drag_official  = item['true_drag']
-
-                rel_err = abs(drag_predicted.item() - drag_official) / abs(drag_official) * 100.0
-                val_drag_errors.append(rel_err)
-
-        val_loss /= len(val_data)
-        mean_drag_err = sum(val_drag_errors) / len(val_drag_errors)
-
-        scheduler.step(val_loss)
-
-        # Track drag accuracy directly:
-        if mean_drag_err < best_drag_err:
-            best_drag_err = mean_drag_err
-            best_model_weights = copy.deepcopy(model.state_dict())
-            torch.save(best_model_weights, "milestone1_best_drag_model.pt")
-
-        if epoch % 10 == 0 or epoch == 1:
-            elapsed = time.perf_counter() - epoch_start
-            print(f"Epoch {epoch:03d}/{NUM_EPOCHS:03d} | "
-                  f"Train Loss: {train_loss:.5f} | "
-                  f"Val Loss: {val_loss:.5f} | "
-                  f"Mean Drag Error: {mean_drag_err:.2f}% | "
-                f"Time: {elapsed:.2f}s | "
-                  f"LR: {optimizer.param_groups[0]['lr']:.2e}")
-
-    # ==============================================================================
-    # 6. FINAL TEST BENCHMARK (Comparing against STAR-CCM+ Log Values)
-    # ==============================================================================
-    print("\n--- Final Test Set Evaluation (Unseen Designs) ---")
-    model.load_state_dict(best_model_weights)
+@torch.no_grad()
+def predict_drag(model, item, coeffs_scaler, device):
     model.eval()
+    geom_norm = item['geom_norm'].to(device)
+    params_norm = item['params_norm'].to(device).unsqueeze(0).repeat(geom_norm.size(0), 1)
+    edge_attr = item['edge_attr'].to(device) if EDGE_FEATURES else None
+    pred_norm = model(geom_norm, params_norm, item['edge_index'].to(device), edge_attr)
+    pred_phys = coeffs_scaler.inverse_transform(pred_norm.cpu()) * item['q_dyn']
+    return compute_design_drag(pred_phys, item['geom']).item()
 
-    with torch.no_grad():
-        for item in test_data:
-            geom = item['geom_norm'].to(device)
-            params = item['params_norm'].to(device).unsqueeze(0).repeat(geom.size(0), 1)
-            edge_index = item['edge_index'].to(device)
 
-            pred_norm = model(geom, params, edge_index)
-            pred_phys = fields_scaler.inverse_transform(pred_norm.cpu())
+def cross_validate(raw_data, device):
+    order = torch.randperm(len(raw_data), generator=torch.Generator().manual_seed(SEED)).tolist()
+    folds = [order[k::NUM_FOLDS] for k in range(NUM_FOLDS)]
+    results = []
+    for k, held_out in enumerate(folds):
+        held = set(held_out)
+        scalers = fit_scalers([raw_data[i] for i in range(len(raw_data)) if i not in held])
+        data = normalize(raw_data, scalers)
+        model = train_model([data[i] for i in range(len(data)) if i not in held], scalers[2], device)
+        for i in held_out:
+            pred = predict_drag(model, data[i], scalers[2], device)
+            results.append((data[i]['design_name'], data[i]['true_drag'], pred, data[i]['q_dyn']))
+        fold_errs = [abs(r[2] - r[1]) / r[1] * 100 for r in results[-len(held_out):]]
+        print(f"Fold {k + 1}/{NUM_FOLDS} | mean drag err {sum(fold_errs) / len(fold_errs):.2f}%")
+    return results
 
-            pred_drag = compute_design_drag(pred_phys, item['geom']).item()
-            true_drag = item['true_drag']
-            error_pct = abs(pred_drag - true_drag) / abs(true_drag) * 100.0
 
-            print(f"[{item['design_name']}] STAR-CCM+ Report Drag: {true_drag:.4f} N | "
-                  f"GNN Integrated Drag: {pred_drag:.4f} N | "
-                  f"Error: {error_pct:.2f}%")
+def main():
+    torch.manual_seed(SEED)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Hardware backend: {device}")
+    raw_data = load_all_starccm_designs(DATA_DIR)
+
+    print(f"\n--- {NUM_FOLDS}-fold cross-validation ({len(raw_data)} designs) ---")
+    results = cross_validate(raw_data, device)
+    errs = torch.tensor([abs(r[2] - r[1]) / r[1] * 100 for r in results])
+    for name, true, pred, q in sorted(results, key=lambda r: int(r[0].split('_')[1])):
+        print(f"[{name}] STAR-CCM+ Drag: {true:8.4f} N (Cd {true / (q * A_REF):.4f}) | "
+              f"GNN Drag: {pred:8.4f} N (Cd {pred / (q * A_REF):.4f}) | "
+              f"Error: {abs(pred - true) / true * 100:6.2f}%")
+    print(f"\nOut-of-fold drag error: mean {errs.mean():.2f}% | median {errs.median():.2f}% | "
+          f"max {errs.max():.2f}%")
+
+    print("\n--- Training final model on all designs ---")
+    scalers = fit_scalers(raw_data)
+    model = train_model(normalize(raw_data, scalers), scalers[2], device)
+    torch.save(model.state_dict(), "milestone1_best_physics_model.pt")
+    print("Saved milestone1_best_physics_model.pt")
+
 
 if __name__ == "__main__":
     main()

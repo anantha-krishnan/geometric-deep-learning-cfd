@@ -22,7 +22,9 @@ class RunningStandardizer:
     def fit(self, tensor_list):
         stacked = torch.cat(tensor_list, dim=0)
         self.mean = stacked.mean(dim=0, keepdim=True)
-        self.std = stacked.std(dim=0, keepdim=True) + 1e-8
+        std = stacked.std(dim=0, keepdim=True)
+        # Constant channels would otherwise amplify float rounding noise.
+        self.std = torch.where(std < 1e-6, torch.ones_like(std), std)
 
     def transform(self, x):
         return (x - self.mean) / self.std
@@ -81,6 +83,16 @@ def build_face_graph_from_vertices(vertex_list, num_faces):
     return torch.tensor(edges, dtype=torch.long).t()
 
 
+def compute_edge_attr(geom, edge_index):
+    """Dimensionless edge features: [unit direction (2), normal change (2), spacing / face length]."""
+    src, dst = edge_index[0], edge_index[1]
+    delta = geom[dst, 0:2] - geom[src, 0:2]
+    dist = delta.norm(dim=1, keepdim=True).clamp_min(1e-12)
+    face_len = 0.5 * (geom[src, 6] + geom[dst, 6]).unsqueeze(1)
+    normal_change = geom[dst, 3:5] - geom[src, 3:5]
+    return torch.cat([delta / dist, normal_change, dist / face_len], dim=1)
+
+
 def load_all_starccm_designs(root_dir):
     """
     Walks all Design_X folders, extracts mesh and physical fields,
@@ -116,9 +128,7 @@ def load_all_starccm_designs(root_dir):
             centroids = np.array(face_data["CentroidFieldFunction"])
             normals   = np.array(face_data["NormalFieldFunction"])
             pressure  = np.array(face_data["StaticPressureFieldFunction"])
-            shear     = np.linalg.norm(
-                np.array(face_data["WallShearStressFieldFunction"]), axis=1
-            )
+            shear_x   = np.array(face_data["WallShearStressFieldFunction"])[:, 0]
             density   = np.array(face_data["DensityFieldFunction"])
 
         # Compute 2D face length (area)
@@ -139,17 +149,26 @@ def load_all_starccm_designs(root_dir):
 
         fields = torch.stack([
             torch.tensor(pressure, dtype=torch.float32).squeeze(),
-            torch.tensor(shear, dtype=torch.float32).squeeze(),
-            torch.tensor(density, dtype=torch.float32).squeeze()
-        ], dim=1)  # [N_faces, 3]
+            torch.tensor(shear_x, dtype=torch.float32).squeeze()
+        ], dim=1)  # [N_faces, 2]
 
         edge_index = build_face_graph_from_vertices(vertex_list, num_faces)
+        rho = float(np.mean(density))
+        q_dyn = 0.5 * rho * log_info["params"][2] ** 2
+        # Drag sensitivity per face: |n_x|*A for pressure, A for streamwise shear.
+        influence = torch.stack([geom[:, 3].abs() * geom[:, 6], geom[:, 6]], dim=1)
+        face_weights = influence / influence.mean(dim=0, keepdim=True)
 
         dataset.append({
             'geom': geom,
             'params': params_tensor,
             'edge_index': edge_index,
+            'edge_attr': compute_edge_attr(geom, edge_index),
             'fields': fields,
+            'coeffs': fields / q_dyn,
+            'face_weights': face_weights,
+            'rho': rho,
+            'q_dyn': q_dyn,
             'true_drag': log_info["true_drag"],
             'true_cd': log_info["true_cd"],
             'design_name': folder_name
@@ -203,4 +222,31 @@ def collate_cfd_graphs(batch):
         'edge_index': torch.cat(edge_index_list, dim=1),
         'batch_idx': torch.cat(batch_idx_list, dim=0),
         'num_graphs': len(batch)
+    }
+
+
+def collate_cfd_graphs_with_physics(batch):
+    """Collate normalized graph inputs alongside raw geometry and drag targets."""
+    normalized_batch = [
+        {
+            'geom': item['geom_norm'],
+            'params': item['params_norm'],
+            'fields': item['fields_norm'],
+            'edge_index': item['edge_index'],
+        }
+        for item in batch
+    ]
+    collated = collate_cfd_graphs(normalized_batch)
+    return {
+        'geom_norm': collated['geom'],
+        'geom_raw': torch.cat([item['geom'] for item in batch], dim=0),
+        'params_norm': collated['params'],
+        'fields_norm': collated['fields'],
+        'face_weights': torch.cat([item['face_weights'] for item in batch], dim=0),
+        'edge_index': collated['edge_index'],
+        'edge_attr': torch.cat([item['edge_attr'] for item in batch], dim=0),
+        'batch_idx': collated['batch_idx'],
+        'true_drags': torch.tensor([item['true_drag'] for item in batch], dtype=torch.float32),
+        'q_dyn': torch.tensor([item['q_dyn'] for item in batch], dtype=torch.float32),
+        'num_graphs': collated['num_graphs']
     }
