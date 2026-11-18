@@ -249,7 +249,18 @@ def _cell_areas(coords, interior_cells, interior_edges, boundary_cells, boundary
     return areas
 
 
-def load_all_starccm_volume_designs(root_dir):
+def compute_volume_edge_attr(geom, edge_index):
+    """Direction, relative spacing and log area ratio for adjacent fluid cells."""
+    source, destination = edge_index
+    displacement = geom[destination, :2] - geom[source, :2]
+    distance = displacement.norm(dim=1, keepdim=True).clamp_min(1e-12)
+    area = geom[:, 3].clamp_min(1e-12)
+    length = ((area[source] + area[destination]) * 0.5).sqrt().unsqueeze(1)
+    ratio = (area[destination] / area[source]).log().unsqueeze(1)
+    return torch.cat([displacement / distance, distance / length, ratio], dim=1)
+
+
+def load_all_starccm_volume_designs(root_dir, include_physics=False):
     """Load cell-centred pressure graphs from STAR-CCM+ volume exports."""
     dataset = []
     design_folders = sorted(
@@ -294,6 +305,17 @@ def load_all_starccm_volume_designs(root_dir):
             pressure = np.asarray(cell_data["Pressure"], dtype=np.float32).reshape(
                 -1, 1
             )
+            if include_physics:
+                wall_distance = np.asarray(
+                    cell_data["AI_ROM_ManualWallDistanceFieldFunction"],
+                    dtype=np.float32,
+                ).reshape(-1, 1)
+                if (
+                    wall_distance.shape[0] != centroids.shape[0]
+                    or not np.isfinite(wall_distance).all()
+                    or np.any(wall_distance < 0)
+                ):
+                    raise ValueError(f"{folder_name} has invalid wall distances.")
 
         num_cells = centroids.shape[0]
         if pressure.shape[0] != num_cells:
@@ -313,15 +335,17 @@ def load_all_starccm_volume_designs(root_dir):
         geom = torch.cat(
             [torch.from_numpy(centroids), torch.from_numpy(areas).unsqueeze(1)], dim=1
         )
-        dataset.append(
-            {
-                "geom": geom,
-                "params": torch.tensor(log_info["params"], dtype=torch.float32),
-                "pressure": torch.from_numpy(pressure),
-                "edge_index": edge_index,
-                "design_name": folder_name,
-            }
-        )
+        item = {
+            "geom": geom,
+            "params": torch.tensor(log_info["params"], dtype=torch.float32),
+            "pressure": torch.from_numpy(pressure),
+            "edge_index": edge_index,
+            "design_name": folder_name,
+        }
+        if include_physics:
+            item["geom"] = torch.cat([geom, torch.from_numpy(wall_distance)], dim=1)
+            item["edge_attr"] = compute_volume_edge_attr(geom, edge_index)
+        dataset.append(item)
 
     print(f"Successfully processed {len(dataset)} volume graphs.")
     return dataset
@@ -434,7 +458,7 @@ def collate_cfd_volume_graphs(batch):
         batch_idx_list.append(torch.full((num_cells,), batch_id, dtype=torch.long))
         node_offset += num_cells
 
-    return {
+    collated = {
         "geom_norm": torch.cat(geom_list, dim=0),
         "params_norm": torch.cat(params_list, dim=0),
         "pressure_norm": torch.cat(pressure_list, dim=0),
@@ -443,3 +467,8 @@ def collate_cfd_volume_graphs(batch):
         "batch_idx": torch.cat(batch_idx_list, dim=0),
         "num_graphs": len(batch),
     }
+    if "edge_attr" in batch[0]:
+        collated["edge_attr"] = torch.cat([item["edge_attr"] for item in batch], dim=0)
+    if "wall_distance" in batch[0]:
+        collated["wall_distance"] = torch.cat([item["wall_distance"] for item in batch])
+    return collated
