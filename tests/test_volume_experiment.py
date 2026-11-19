@@ -111,10 +111,57 @@ class VolumeExperimentTests(unittest.TestCase):
         self.assertIn("gnn32", names)
         self.assertIn("gnn_parameter_matched", names)
         self.assertIn("latent_attention32", names)
+        self.assertIn("neighbor_attention_parameter_matched", names)
         for choice in choices:
             model = experiment.create_architecture_model(choice, torch.device("cpu"))
             self.assertEqual(model.encoder[0].out_features, choice["hidden_dim"])
             self.assertEqual(model.attention_tokens, choice["attention_tokens"])
+
+        by_name = {choice["name"]: choice for choice in choices}
+        latent = by_name["latent_attention32"]
+        neighbor = by_name["neighbor_attention_parameter_matched"]
+        self.assertLessEqual(
+            abs(latent["parameter_count"] - neighbor["parameter_count"])
+            / latent["parameter_count"],
+            0.05,
+        )
+
+    def test_ranker_exposes_tradeoffs_and_matches_metric_priorities(self):
+        rows = [
+            {
+                "architecture": "latent",
+                "mean_design_rmse_pa": 2.98,
+                "mean_near_wall_rmse_pa": 11.96,
+                "worst_design_rmse_pa": 4.06,
+            },
+            {
+                "architecture": "neighbor",
+                "mean_design_rmse_pa": 3.43,
+                "mean_near_wall_rmse_pa": 11.95,
+                "worst_design_rmse_pa": 5.17,
+            },
+            {
+                "architecture": "gnn32",
+                "mean_design_rmse_pa": 4.97,
+                "mean_near_wall_rmse_pa": 19.93,
+                "worst_design_rmse_pa": 6.72,
+            },
+        ]
+        ranked = experiment.rank_architectures(rows)
+        self.assertEqual(ranked["balanced"][0]["architecture"], "latent")
+        self.assertEqual(ranked["whole_domain"][0]["architecture"], "latent")
+        self.assertEqual(ranked["near_body_only"][0]["architecture"], "neighbor")
+        self.assertIn("criterion_ranks", ranked["balanced"][0])
+        self.assertEqual(ranked["balanced"][-1]["architecture"], "gnn32")
+
+    def test_ranker_rejects_missing_or_invalid_metrics(self):
+        with self.assertRaisesRegex(ValueError, "missing ranking metrics"):
+            experiment.rank_architectures([{"architecture": "incomplete"}])
+        with self.assertRaises(ValueError):
+            experiment.rank_architectures([
+                {"architecture": "bad", "mean_design_rmse_pa": -1,
+                 "mean_near_wall_rmse_pa": 2, "worst_design_rmse_pa": 3}
+            ])
 
 
 if __name__ == "__main__":

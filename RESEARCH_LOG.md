@@ -167,3 +167,21 @@ Command: `uv run python compare_volume_architectures.py --design Design_1 --max-
 - Problems faced: the first smoke run exposed two artifact-layout assumptions (cached fold membership stored in `config` rather than `folds`, and direct NPZs rather than a `predictions/` subfolder); the runner was updated to accept both layouts and the smoke run then completed. A gradient test also caught unused neighbor-attention value parameters; the implementation now uses learned edge messages as attention values.
 - Important limitation: this was one fold and one seed, and these six outer designs were previously inspected in earlier experiments. Although they were not used for epoch selection in this run, using them repeatedly to compare architectures means this is exploratory evidence, NOT an unbiased final test. Do not select/promote a production model based solely on these results. Confirm with new DOE designs or repeated nested folds/seeds.
 - Decision: retain all checkpoints and images; leave defaults and production artifacts unchanged. Tentatively prioritize latent attention and parameter-matched GNN for repeated validation; keep neighbour attention as a near-body-focused alternative. Next verification should be repeated outer folds/seeds or the tutorial-style new DOE set, with visual comparison every run.
+
+## 2026-11-19 - Explicit Model Ranking and Parameter-Matched Neighbour Attention
+
+- Added `rank_volume_models.py` and `rank_architectures()` to rank existing summaries under three explicit profiles: balanced (40% mean whole-domain RMSE, 40% mean near-body RMSE, 20% worst-design RMSE), whole-domain priority (60/20/20), and near-body only. The score is a weighted sum of relative regret versus the best candidate per metric; the report also includes each metric's rank. The weights express priorities, not a statistically calibrated utility or confidence measure.
+- Existing four-model rankings: latent attention wins balanced and whole-domain profiles; neighbour_attention32 wins near-body-only by 0.011 Pa versus latent attention (effectively tied). This answers the user's visual preference: neighbour attention is top-ranked when near-body field structure is the deciding criterion, not when equally balancing whole-domain accuracy and worst-design robustness.
+- Added `neighbor_attention_parameter_matched`: hidden width 56, four heads, 95,157 parameters, versus 92,097 for latent_attention32 and 91,389 for the parameter-matched plain GNN. The closest head-divisible hidden width is 3.32% above the latent-attention parameter count.
+- Same nested split, seed 2026, 19 inner-train / 5 inner-validation / 6 outer evaluation designs, near-body-balanced loss and early-stopping budget. Best epoch 120; inner validation loss 0.0201964.
+
+| Model | Parameters | Mean RMSE [Pa] | Mean near-body RMSE [Pa] | Worst-design RMSE [Pa] |
+| --- | ---: | ---: | ---: | ---: |
+| neighbor_attention32 | 32,109 | 3.42721 | 11.95167 | 5.16791 |
+| neighbor_attention_parameter_matched | 95,157 | 3.47246 | 12.87265 | 5.63895 |
+
+- Parameter matching did not improve this neighbour-attention variant on this fold. Width-32 neighbour attention remains preferable to its width-56 parameter-matched version in these measurements; do not conclude that parameter count itself caused the difference.
+- Added five-model ranking output: `volume_results/architecture_validation/rankings_with_matched_neighbor.json`. Matched-neighbour checkpoint, metrics, and six pressure images are in `volume_results/architecture_neighbor_matched/neighbor_attention_parameter_matched/`.
+- Visual spot-check: [Design_26 parameter-matched neighbour attention comparison](volume_results/architecture_neighbor_matched/neighbor_attention_parameter_matched/Design_26_comparison.png). It follows the broad pressure field but has higher reported errors than width32 neighbour attention on that case.
+- Test/quality: 35 tests pass; Ruff and ty pass for ranking files. A test initially set an unrealistically strict 3% width-match threshold; nearest legal width differs by 3.32%, so the test was adjusted to 5% and the rationale documented.
+- Interpretation caveat remains: all six outer designs were previously inspected; this is exploratory ranking, not unbiased model selection. Keep the chosen architecture provisional until new DOE designs or repeated nested splits/seeds are run.

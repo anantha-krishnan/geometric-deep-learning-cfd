@@ -12,6 +12,7 @@ inner-validation checkpoint. Each architecture writes metrics and comparison PNG
 import argparse
 import csv
 import json
+import math
 import statistics
 from pathlib import Path
 
@@ -151,12 +152,127 @@ def architecture_choices(device=None):
             "attention_tokens": 0,
         },
     )
+    neighbor_reference = next(
+        choice for choice in choices if choice["name"] == "latent_attention32"
+    )
+    target_parameter_count = sum(
+        parameter.numel()
+        for parameter in create_architecture_model(neighbor_reference, device).parameters()
+    )
+    neighbor_common = {
+        **common,
+        "name": "neighbor_attention_candidate",
+        "attention_tokens": 0,
+        "message_attention_heads": 4,
+    }
+    neighbor_width = min(
+        range(40, 129, 4),
+        key=lambda width: abs(
+            sum(
+                parameter.numel()
+                for parameter in create_architecture_model(
+                    {**neighbor_common, "hidden_dim": width}, device
+                ).parameters()
+            )
+            - target_parameter_count
+        ),
+    )
+    choices.append(
+        {
+            **neighbor_common,
+            "name": "neighbor_attention_parameter_matched",
+            "hidden_dim": neighbor_width,
+        }
+    )
     for choice in choices:
         choice["parameter_count"] = sum(
             parameter.numel()
             for parameter in create_architecture_model(choice, device).parameters()
         )
     return choices
+
+
+def rank_architectures(rows, profiles=None):
+    """Rank models by explicit metric priorities; lower normalized regret is better."""
+    metrics = (
+        "mean_design_rmse_pa",
+        "mean_near_wall_rmse_pa",
+        "worst_design_rmse_pa",
+    )
+    profiles = profiles or {
+        "balanced": {
+            "mean_design_rmse_pa": 0.4,
+            "mean_near_wall_rmse_pa": 0.4,
+            "worst_design_rmse_pa": 0.2,
+        },
+        "whole_domain": {
+            "mean_design_rmse_pa": 0.6,
+            "mean_near_wall_rmse_pa": 0.2,
+            "worst_design_rmse_pa": 0.2,
+        },
+        "near_body_only": {"mean_near_wall_rmse_pa": 1.0},
+    }
+    if not rows:
+        raise ValueError("At least one architecture result is required.")
+    for row in rows:
+        missing = [key for key in metrics if key not in row or row[key] is None]
+        if missing:
+            raise ValueError(
+                f"Architecture {row.get('architecture', '<unnamed>')} has missing ranking metrics: {missing}"
+            )
+        if any(not math.isfinite(float(row[key])) or float(row[key]) <= 0 for key in metrics):
+            raise ValueError("Ranking metrics must be finite and positive.")
+    criteria = {
+        key: {
+            name: rank + 1
+            for rank, name in enumerate(
+                row["architecture"]
+                for row in sorted(rows, key=lambda item: (item[key], item["architecture"]))
+            )
+        }
+        for key in metrics
+    }
+    output = {}
+    best = {key: min(float(row[key]) for row in rows) for key in metrics}
+    for profile_name, weights in profiles.items():
+        if not weights or any(key not in metrics for key in weights):
+            raise ValueError(f"Invalid metric weights for ranking profile {profile_name}.")
+        if any(not math.isfinite(weight) or weight < 0 for weight in weights.values()):
+            raise ValueError("Ranking weights must be finite and nonnegative.")
+        total_weight = sum(weights.values())
+        if total_weight <= 0:
+            raise ValueError("Each ranking profile needs positive total weight.")
+        ranked = []
+        for row in rows:
+            regret = sum(
+                (weight / total_weight) * (float(row[key]) / best[key] - 1)
+                for key, weight in weights.items()
+            )
+            ranked.append({
+                **row,
+                "profile": profile_name,
+                "weighted_relative_regret": regret,
+                "criterion_ranks": {key: criteria[key][row["architecture"]] for key in metrics},
+            })
+        output[profile_name] = sorted(
+            ranked, key=lambda row: (row["weighted_relative_regret"], row["architecture"])
+        )
+    return output
+
+
+def save_architecture_rankings(summary_paths, output_path):
+    rows = []
+    for path in summary_paths:
+        report = json.loads(Path(path).read_text())
+        rows.extend(report["architectures"])
+    names = [row["architecture"] for row in rows]
+    if len(names) != len(set(names)):
+        raise ValueError("Architecture summaries contain duplicate model names.")
+    rankings = rank_architectures(rows)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(rankings, indent=2) + "\n")
+    return rankings
 
 
 def forward_item(model, item, device):
@@ -531,6 +647,7 @@ def main():
             "gnn_parameter_matched",
             "latent_attention32",
             "neighbor_attention32",
+            "neighbor_attention_parameter_matched",
         ],
     )
     parser.add_argument("--threads", type=int, default=1)
