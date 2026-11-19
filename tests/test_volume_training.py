@@ -61,6 +61,30 @@ class VolumeTrainingTests(unittest.TestCase):
             all(parameter.grad is not None for parameter in attention.parameters())
         )
 
+    def test_edge_attention_gnn_forward_and_gradients(self):
+        torch.manual_seed(7)
+        model = models.Milestone1_GNN(
+            geom_dim=5,
+            hidden_dim=8,
+            num_layers=2,
+            out_dim=1,
+            edge_dim=4,
+            use_global=True,
+            message_attention_heads=2,
+        )
+        geom = torch.randn(4, 5)
+        params = torch.randn(4, 3)
+        edges = torch.tensor([[0, 1, 2, 3], [1, 0, 3, 2]])
+        edge_attr = torch.randn(4, 4)
+        result = model(geom, params, edges, edge_attr)
+        self.assertEqual(result.shape, (4, 1))
+        result.square().mean().backward()
+        self.assertTrue(
+            all(parameter.grad is not None for parameter in model.parameters())
+        )
+        with self.assertRaises(ValueError):
+            models.Milestone1_GNN(hidden_dim=8, message_attention_heads=3)
+
     def test_attention_is_opt_in_and_rejects_incompatible_heads(self):
         torch.manual_seed(7)
         legacy = models.Milestone1_GNN(hidden_dim=8, num_layers=2)

@@ -7,9 +7,14 @@ from torch import nn
 
 
 class MessagePassingBlock(nn.Module):
-    def __init__(self, hidden_dim, edge_dim=0, use_global=False):
+    def __init__(self, hidden_dim, edge_dim=0, use_global=False, attention_heads=0):
         super().__init__()
         self.use_global = use_global
+        self.attention_heads = attention_heads
+        if attention_heads and hidden_dim % attention_heads:
+            raise ValueError(
+                "Hidden width must be divisible by neighbor-attention heads."
+            )
         self.edge_mlp = nn.Sequential(
             nn.Linear(hidden_dim * 2 + edge_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -23,6 +28,12 @@ class MessagePassingBlock(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
+        if attention_heads:
+            self.message_attention = nn.Sequential(
+                nn.Linear(hidden_dim * 2 + edge_dim, hidden_dim),
+                nn.LeakyReLU(0.2),
+                nn.Linear(hidden_dim, attention_heads),
+            )
 
     def forward(self, h, edge_index, edge_attr=None, batch_idx=None):
         src, dst = edge_index[0], edge_index[1]
@@ -31,9 +42,27 @@ class MessagePassingBlock(nn.Module):
         parts = [h[src], h[dst]] + ([edge_attr] if edge_attr is not None else [])
         msg = self.edge_mlp(torch.cat(parts, dim=-1))
 
-        # 2. Sum aggregation into recipient face
-        aggr = torch.zeros_like(h)
-        aggr.index_add_(0, dst, msg)
+        # 2. Aggregate either by sum or normalized edge-aware attention.
+        if self.attention_heads:
+            scores = self.message_attention(torch.cat(parts, dim=-1))
+            indices = dst.unsqueeze(1).expand(-1, self.attention_heads)
+            maxima = h.new_full((h.size(0), self.attention_heads), -torch.inf)
+            maxima.scatter_reduce_(0, indices, scores, reduce="amax", include_self=True)
+            exp_scores = (scores - maxima[dst]).exp()
+            normalizer = h.new_zeros(h.size(0), self.attention_heads)
+            normalizer.index_add_(0, dst, exp_scores)
+            weights = exp_scores / normalizer[dst].clamp_min(1e-12)
+            values = msg.reshape(
+                -1, self.attention_heads, h.size(1) // self.attention_heads
+            )
+            aggr_heads = h.new_zeros(
+                h.size(0), self.attention_heads, h.size(1) // self.attention_heads
+            )
+            aggr_heads.index_add_(0, dst, weights.unsqueeze(-1) * values)
+            aggr = aggr_heads.reshape_as(h)
+        else:
+            aggr = torch.zeros_like(h)
+            aggr.index_add_(0, dst, msg)
 
         # 3. State update with residual connection
         node_in = [h, aggr]
@@ -138,12 +167,14 @@ class Milestone1_GNN(nn.Module):
         use_global=False,
         attention_tokens=0,
         attention_heads=4,
+        message_attention_heads=0,
     ):
         super().__init__()
         if attention_tokens < 0:
             raise ValueError("Attention token count cannot be negative.")
         self.attention_tokens = attention_tokens
         self.attention_heads = attention_heads
+        self.message_attention_heads = message_attention_heads
         # Input: [x, y, z, nx, ny, nz, Area] + [P_D1_r, P_D2_r, P_V]
         self.encoder = nn.Sequential(
             nn.Linear(geom_dim + design_dim, hidden_dim),
@@ -153,7 +184,9 @@ class Milestone1_GNN(nn.Module):
 
         self.layers = nn.ModuleList(
             [
-                MessagePassingBlock(hidden_dim, edge_dim, use_global)
+                MessagePassingBlock(
+                    hidden_dim, edge_dim, use_global, message_attention_heads
+                )
                 for _ in range(num_layers)
             ]
         )

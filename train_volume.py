@@ -142,18 +142,27 @@ def normalize_data(data, scalers):
 
 
 def create_model(
-    device, geom_dim=4, edge_dim=0, *, attention_tokens=0, attention_heads=4
+    device,
+    geom_dim=4,
+    edge_dim=0,
+    *,
+    attention_tokens=0,
+    attention_heads=4,
+    message_attention_heads=0,
+    hidden_dim=HIDDEN_DIM,
+    num_layers=NUM_LAYERS,
 ):
     return Milestone1_GNN(
         geom_dim=geom_dim,
         design_dim=3,
-        hidden_dim=HIDDEN_DIM,
-        num_layers=NUM_LAYERS,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
         out_dim=1,
         edge_dim=edge_dim,
         use_global=True,
         attention_tokens=attention_tokens,
         attention_heads=attention_heads,
+        message_attention_heads=message_attention_heads,
     ).to(device)
 
 
@@ -170,6 +179,9 @@ def train_model(
     progress_every=0,
     attention_tokens=0,
     attention_heads=4,
+    message_attention_heads=0,
+    hidden_dim=HIDDEN_DIM,
+    num_layers=NUM_LAYERS,
 ):
     if epochs < 1 or not train_data:
         raise ValueError("Training requires positive epochs and at least one design.")
@@ -192,6 +204,9 @@ def train_model(
         edge_dim,
         attention_tokens=attention_tokens,
         attention_heads=attention_heads,
+        message_attention_heads=message_attention_heads,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
     )
     optimizer = optim.AdamW(
         model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
@@ -387,6 +402,9 @@ def cross_validate(data, device, epochs, results_dir=None, run_config=None):
             seed=fold_seed,
             attention_tokens=config.get("attention_tokens", 0),
             attention_heads=config.get("attention_heads", 4),
+            message_attention_heads=config.get("message_attention_heads", 0),
+            hidden_dim=config.get("hidden_dim", HIDDEN_DIM),
+            num_layers=config.get("num_layers", NUM_LAYERS),
         )
         fold_rows = []
         for item in normalize_data([data[index] for index in held_out], scalers):
@@ -435,6 +453,7 @@ def save_checkpoint(model, scalers, path, run_config=None):
                 "use_global": True,
                 "attention_tokens": model.attention_tokens,
                 "attention_heads": model.attention_heads,
+                "message_attention_heads": model.message_attention_heads,
             },
             "format_version": 2,
             "run_config": run_config or {"variant": "baseline"},
@@ -515,6 +534,7 @@ def main():
         help="Global latent tokens per layer; 0 preserves the original GNN.",
     )
     parser.add_argument("--attention-heads", type=int, default=4)
+    parser.add_argument("--message-attention-heads", type=int, default=0)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--skip-cv", action="store_true")
     mode.add_argument("--cv-only", action="store_true")
@@ -572,6 +592,7 @@ def main():
         "cv_performed": not args.skip_cv,
         "attention_tokens": args.attention_tokens,
         "attention_heads": args.attention_heads,
+        "message_attention_heads": args.message_attention_heads,
     }
     result_name = f"{args.variant}_attention" if args.attention_tokens else args.variant
     results_dir = args.results_dir or PROJECT_ROOT / "volume_results" / result_name
@@ -589,6 +610,7 @@ def main():
         seed=args.seed,
         attention_tokens=args.attention_tokens,
         attention_heads=args.attention_heads,
+        message_attention_heads=args.message_attention_heads,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     save_checkpoint(model, scalers, args.output, config)

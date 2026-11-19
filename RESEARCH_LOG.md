@@ -132,3 +132,38 @@ Attention-model per-design measurements:
 - Limitations: one seed, one already-inspected fold, larger parameter count, no matched-FLOP control, no internal-validation-based epoch selection, and a short fixed 40-epoch schedule. The six held-out designs were not used for gradient updates, but repeated research comparisons on them limit their status as a pristine test set.
 - Next candidates, not executed: internal-validation convergence study; parameter-matched wider no-attention GNN; alternate token counts/spatial tokens; full-attention feasibility check on small/subsampled meshes. Full N-by-N attention remains deliberately deferred, not rejected on accuracy grounds.
 - Verification at completion: 28 tests pass; Ruff and type checks passed on changed Python files. Baseline defaults, GNN local depth, original checkpoints, and unrelated worktree changes were preserved.
+
+## 2026-11-19 - Nested Validation and Architecture Comparison Plan
+
+- Outer split is the cached fold containing Design_1: 24 outer-training designs and six outer-test designs. These six were already inspected in prior experiments and are not pristine; keep that limitation explicit.
+- Inner split: deterministic 80/20 split of the outer-training set (19 inner-training, five inner-validation for this fold). Fit every scaler on the 19 inner-training designs only. Never use outer-test pressure to select epochs or checkpoints.
+- Checkpoint selection: near-body-balanced normalized validation loss, evaluated every 10 epochs; maximum 1,000 epochs; minimum 100; stop after eight validation checks without improvement. Save the best validation checkpoint, including its inner-training scalers, and plot training/validation curves.
+- Architecture candidates: original three-layer width-32 GNN; width-62 GNN with 91,389 parameters (parameter-count matched to 32-token latent attention, 92,097 parameters); three-layer width-32 latent-attention GNN (32 tokens/four heads); edge-aware four-head neighbor-attention GNN (width32, 32,109 parameters).
+- All candidates use the same fixed outer/inner design membership, seed, geometry features, coefficient targets, near-body loss, optimizer, max epoch budget and checkpoint-selection rule. Parameter matching only controls approximate parameter count, not FLOPs or runtime.
+- After selection on inner validation, evaluate each selected checkpoint on the six outer designs and create per-design three-panel CFD / cached GNN reference / new architecture pressure PNGs, as well as validation-loss curves and JSON/CSV metrics. Do not select a winner from these already inspected outer results.
+- Reproducible command: `uv run python compare_volume_architectures.py --design Design_1 --max-epochs 1000 --minimum-epochs 100 --validation-interval 10 --patience 8`.
+- Smoke-tested all four architectures for one epoch on real data; artifacts were written under `volume_results/architecture_smoke/` and are not accuracy evidence.
+- Full run status: pending.
+
+## 2026-11-19 - Inner-Validation Architecture Study Completed
+
+Command: `uv run python compare_volume_architectures.py --design Design_1 --max-epochs 1000 --minimum-epochs 100 --validation-interval 10 --patience 8`.
+
+- Outer fold 2 was kept fixed: 24 outer-training designs, six outer evaluation designs. A seeded 80/20 split of the 24 produced 19 inner-training and five inner-validation designs. Scalers were fit only on the 19 inner-training designs. Inner-validation loss selected each saved checkpoint; the six outer designs were evaluated only after selection in code.
+- All four models used the same design split, 0.5 whole-domain / 0.5 near-body loss, 1,000 maximum epochs, AdamW settings, validation cadence, and early stopping. Each selected its own best validation checkpoint. GNN depth remained three layers.
+
+| Architecture | Parameters | Best epoch | Mean outer RMSE [Pa] | Mean near-body RMSE [Pa] | Mean design R-squared |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Original GNN, width 32 | 25,089 | 50 | 4.96591 | 19.92754 | 0.67773 |
+| Parameter-matched GNN, width 62 | 91,389 | 170 | 3.24815 | 14.04803 | 0.78345 |
+| Latent attention, width 32 / 32 tokens / 4 heads | 92,097 | 160 | 2.98384 | 11.96292 | 0.86628 |
+| Neighbour attention, width 32 / 4 heads | 32,109 | 180 | 3.42721 | 11.95167 | 0.81460 |
+
+- On this fold the parameter-matched GNN substantially improved over width32, so capacity matters. Latent attention improved mean whole-domain and near-body metrics over both GNNs, but its result is not parameter/FLOP matched to the small baseline; the width62 GNN is its parameter-count control. Neighbour attention had the best mean near-body RMSE by a negligible 0.010 Pa versus latent attention, while its whole-domain RMSE was worse by 0.443 Pa.
+- Comparison images for all six outer designs are in `volume_results/architecture_validation/{gnn32,gnn_parameter_matched,latent_attention32,neighbor_attention32}/Design_*_comparison.png`. They show CFD, the cached near-body reference, and the selected architecture with a common per-design pressure scale and whole/near-body errors.
+- Validation curves: each architecture directory has `validation_curve.png` and `validation_history.json`. The overall metrics and per-design reports are in `architecture_summary.json`, `architecture_summary.csv`, and each model's `metrics.json`.
+- All four best-validation checkpoints were reloaded successfully; saved epochs and scalers match the run reports. Checkpoints are `best_validation.pt` in each architecture directory.
+- Verification: 33 tests passed; Ruff, ty, and `git diff --check` passed. A one-epoch end-to-end smoke test also completed for all variants before the full run.
+- Problems faced: the first smoke run exposed two artifact-layout assumptions (cached fold membership stored in `config` rather than `folds`, and direct NPZs rather than a `predictions/` subfolder); the runner was updated to accept both layouts and the smoke run then completed. A gradient test also caught unused neighbor-attention value parameters; the implementation now uses learned edge messages as attention values.
+- Important limitation: this was one fold and one seed, and these six outer designs were previously inspected in earlier experiments. Although they were not used for epoch selection in this run, using them repeatedly to compare architectures means this is exploratory evidence, NOT an unbiased final test. Do not select/promote a production model based solely on these results. Confirm with new DOE designs or repeated nested folds/seeds.
+- Decision: retain all checkpoints and images; leave defaults and production artifacts unchanged. Tentatively prioritize latent attention and parameter-matched GNN for repeated validation; keep neighbour attention as a near-body-focused alternative. Next verification should be repeated outer folds/seeds or the tutorial-style new DOE set, with visual comparison every run.
