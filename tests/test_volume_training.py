@@ -7,6 +7,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
+import model as models
 import train_volume as training
 from diagnose_volume import plot_loss_comparison
 
@@ -25,6 +26,85 @@ def make_graph(name="Design_1", speed=2.0):
 
 
 class VolumeTrainingTests(unittest.TestCase):
+    def test_attention_is_graph_isolated_and_node_permutation_equivariant(self):
+        torch.manual_seed(7)
+        attention = models.LatentGlobalAttention(8, num_tokens=4, num_heads=2).eval()
+        values = torch.randn(7, 8)
+        batch_idx = torch.tensor([0, 0, 0, 1, 1, 1, 1])
+        result = attention(values, batch_idx)
+        expected = torch.cat(
+            [
+                attention(values[:3], torch.zeros(3, dtype=torch.long)),
+                attention(values[3:], torch.zeros(4, dtype=torch.long)),
+            ]
+        )
+        torch.testing.assert_close(result, expected)
+        permutation = torch.tensor([6, 1, 3, 0, 4, 2, 5])
+        torch.testing.assert_close(
+            attention(values[permutation], batch_idx[permutation]),
+            result[permutation],
+        )
+        altered = values.clone()
+        altered[3:] *= 100
+        torch.testing.assert_close(attention(altered, batch_idx)[:3], result[:3])
+
+    def test_attention_transfers_global_information_and_gradients(self):
+        torch.manual_seed(7)
+        attention = models.LatentGlobalAttention(8, num_tokens=4, num_heads=2)
+        values = torch.randn(5, 8, requires_grad=True)
+        result = attention(values, torch.zeros(5, dtype=torch.long))
+        self.assertEqual(result.shape, values.shape)
+        result[0].square().sum().backward()
+        assert values.grad is not None
+        self.assertGreater(values.grad[4].abs().sum().item(), 0)
+        self.assertTrue(
+            all(parameter.grad is not None for parameter in attention.parameters())
+        )
+
+    def test_attention_is_opt_in_and_rejects_incompatible_heads(self):
+        torch.manual_seed(7)
+        legacy = models.Milestone1_GNN(hidden_dim=8, num_layers=2)
+        torch.manual_seed(7)
+        disabled = models.Milestone1_GNN(hidden_dim=8, num_layers=2, attention_tokens=0)
+        self.assertEqual(list(legacy.state_dict()), list(disabled.state_dict()))
+        for key, value in legacy.state_dict().items():
+            torch.testing.assert_close(
+                value, disabled.state_dict()[key], rtol=0, atol=0
+            )
+        with self.assertRaises(ValueError):
+            models.Milestone1_GNN(hidden_dim=8, attention_tokens=4, attention_heads=3)
+
+    def test_attention_training_checkpoint_round_trip(self):
+        data = training.prepare_data(
+            [make_graph(), make_graph("Design_2", 4)], "geometry"
+        )
+        scalers = training.fit_scalers(data)
+        normalized = training.normalize_data(data, scalers)
+        model = training.train_model(
+            normalized,
+            torch.device("cpu"),
+            1,
+            attention_tokens=4,
+            attention_heads=2,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "attention.pt"
+            training.save_checkpoint(model, scalers, path, {"variant": "geometry"})
+            saved = torch.load(path, map_location="cpu", weights_only=True)
+            self.assertEqual(saved["model_config"]["attention_tokens"], 4)
+            self.assertEqual(saved["model_config"]["attention_heads"], 2)
+            restored, restored_scalers, _ = training.load_checkpoint(
+                path, torch.device("cpu")
+            )
+        torch.testing.assert_close(
+            training.predict_pressure(
+                model, normalized[0], scalers[2], torch.device("cpu")
+            ),
+            training.predict_pressure(
+                restored, normalized[0], restored_scalers[2], torch.device("cpu")
+            ),
+        )
+
     def test_loss_comparison_saves_shared_scale_image_with_panel_metrics(self):
         polygons = [
             np.array([[0, 0], [1, 0], [1, 1], [0, 1]]),
@@ -44,12 +124,19 @@ class VolumeTrainingTests(unittest.TestCase):
                     {"rmse_pa": 15.0, "near_wall_rmse_pa": 20.0},
                     {"rmse_pa": 1.0, "near_wall_rmse_pa": 2.0},
                 ],
+                panel_titles=(
+                    "Actual CFD",
+                    "GNN Without Attention",
+                    "GNN With Latent Attention",
+                ),
+                experiment_note="Matched training budget; architecture differs",
             )
             self.assertGreater(output.stat().st_size, 1000)
             panels = [axis for axis in figure.axes if axis.get_title()]
             self.assertEqual(len(panels), 3)
             self.assertIn("Near-body RMSE: 20.00 Pa", panels[1].get_title())
             self.assertIn("Near-body RMSE: 2.00 Pa", panels[2].get_title())
+            self.assertIn("GNN With Latent Attention", panels[2].get_title())
             self.assertIs(panels[0].collections[0].norm, panels[2].collections[0].norm)
 
     def test_near_body_loss_preserves_domain_and_near_body_influence(self):

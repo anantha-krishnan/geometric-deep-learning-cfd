@@ -2,3 +2,6 @@
 __pycache__/
 *.py[cod]
 AIROMMinimizingDragAroundAnAerodynamicBody_input/
+volume_results/
+validation_results/
+*.pt

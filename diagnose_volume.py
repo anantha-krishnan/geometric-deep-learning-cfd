@@ -3,6 +3,8 @@
 uv run python diagnose_volume.py --stage overfit
 uv run python diagnose_volume.py --stage fold
 uv run python diagnose_volume.py --stage plots
+uv run python diagnose_volume.py --stage attention --attention-tokens 32 --attention-heads 4
+uv run python diagnose_volume.py --stage attention-plots
 
 The overfit stage is a reconstruction, not validation. The fold stage reuses
 saved area-loss predictions and trains one matched near-body-loss model. Neither
@@ -70,7 +72,12 @@ def export_run(model, scalers, data, config, history, output_dir, data_dir):
             values,
             {
                 "design_name": item["design_name"],
-                "variant": f"geometry / {config['loss']}",
+                "variant": f"geometry / {config['loss']}"
+                + (
+                    f" / attention({config['attention_tokens']})"
+                    if config.get("attention_tokens", 0)
+                    else ""
+                ),
                 "fold": config.get("fold", 0),
                 "evaluation": config["evaluation"],
                 "reconstruction": config["reconstruction"],
@@ -138,6 +145,8 @@ def plot_loss_comparison(
     fold,
     output,
     metrics=None,
+    panel_titles=None,
+    experiment_note=None,
 ):
     values = (actual, area_prediction, balanced_prediction)
     norm = Normalize(
@@ -147,7 +156,11 @@ def plot_loss_comparison(
         1, 3, figsize=(20, 5.5), layout="constrained", sharex=True, sharey=True
     )
     coords = np.concatenate(polygons)
-    titles = ("Actual CFD", "Area Loss (Saved Baseline)", "Near-Body-Balanced Loss")
+    titles = panel_titles or (
+        "Actual CFD",
+        "Area Loss (Saved Baseline)",
+        "Near-Body-Balanced Loss",
+    )
     for index, (axis, field, title) in enumerate(zip(axes, values, titles)):
         collection = PolyCollection(
             polygons,
@@ -181,7 +194,8 @@ def plot_loss_comparison(
         pad=0.1,
     )
     figure.suptitle(
-        f"{name} | Held-Out Fold {fold} | Same Architecture, Seed, Training Designs and 40 Epochs"
+        f"{name} | Held-Out Fold {fold} | "
+        + (experiment_note or "Same Architecture, Seed, Training Designs and 40 Epochs")
     )
     figure.savefig(output, dpi=200, facecolor="white")
     plt.close(figure)
@@ -193,12 +207,16 @@ def render_saved_comparisons(baseline_dir, output, data_dir):
     baseline = json.loads((baseline_dir / "metrics.json").read_text())
     report = json.loads((output / "metrics.json").read_text())
     baseline_rows = {row["design_name"]: row for row in baseline["designs"]}
+    prediction_dir = (
+        baseline_dir / "predictions"
+        if (baseline_dir / "predictions").is_dir()
+        else baseline_dir
+    )
+    attention = report["config"].get("attention_tokens", 0)
     for row in report["designs"]:
         name = row["design_name"]
         with (
-            np.load(
-                baseline_dir / "predictions" / f"{name}.npz", allow_pickle=False
-            ) as saved,
+            np.load(prediction_dir / f"{name}.npz", allow_pickle=False) as saved,
             np.load(output / f"{name}.npz", allow_pickle=False) as diagnostic,
         ):
             actual = diagnostic["actual_pressure_pa"].reshape(-1)
@@ -216,9 +234,42 @@ def render_saved_comparisons(baseline_dir, output, data_dir):
             balanced_prediction,
             name,
             report["config"]["fold"],
-            output / f"{name}_loss_comparison.png",
+            output / f"{name}_{'attention' if attention else 'loss'}_comparison.png",
             metrics=[baseline_rows[name], row],
+            panel_titles=(
+                "Actual CFD",
+                "Near-Body GNN (No Attention)",
+                "GNN + Latent Attention",
+            )
+            if attention
+            else None,
+            experiment_note=(
+                f"Same seed, loss, training designs and 40 epochs | {attention} tokens, "
+                f"{report['config']['attention_heads']} heads; architectures differ"
+            )
+            if attention
+            else None,
         )
+
+
+def attention_reference(args, fold):
+    path = args.reference_dir or args.output_dir / "fold_near_body"
+    report = json.loads((path / "metrics.json").read_text())
+    config = report["config"]
+    if (
+        config.get("loss") != "near-body"
+        or config.get("epochs") != 40
+        or config.get("seed") != fold["seed"]
+        or config.get("fold") != fold["fold"]
+        or set(config.get("training_designs", [])) != set(fold["training_designs"])
+        or set(config.get("held_out_designs", [])) != set(fold["held_out_designs"])
+        or config.get("near_body_mix") != 0.5
+        or config.get("attention_tokens", 0)
+    ):
+        raise ValueError(
+            "The cached no-attention reference must match this fold, loss, seed and 40-epoch schedule."
+        )
+    return path, report
 
 
 def run_fold(data, args):
@@ -245,8 +296,13 @@ def run_fold(data, args):
         raise ValueError("Data does not match the saved fold membership.")
     scalers = training.fit_scalers(training_data)
     history = []
+    attention = args.stage == "attention"
+    tokens = args.attention_tokens if attention else 0
+    reference_dir, reference = (
+        attention_reference(args, fold) if attention else (args.baseline_dir, baseline)
+    )
     print(
-        f"Training near-body loss on fold {fold['fold']} only; cached area-loss model is NOT rerun.",
+        f"Training {'attention + ' if attention else ''}near-body loss on fold {fold['fold']} only; cached reference is NOT rerun.",
         flush=True,
     )
     model = training.train_model(
@@ -257,6 +313,8 @@ def run_fold(data, args):
         loss_mode="near-body",
         history=history,
         progress_every=10,
+        attention_tokens=tokens,
+        attention_heads=args.attention_heads,
     )
     config = {
         **baseline["config"],
@@ -266,31 +324,53 @@ def run_fold(data, args):
         "evaluation": f"Held-out fold {fold['fold']}",
         "reconstruction": False,
         "cached_area_results": str(args.baseline_dir.resolve()),
+        "cached_reference_results": str(reference_dir.resolve()),
+        "attention_tokens": tokens,
+        "attention_heads": args.attention_heads,
     }
-    output = args.output_dir / "fold_near_body"
+    output = args.output_dir / ("fold_attention" if attention else "fold_near_body")
     report, _ = export_run(
         model, scalers, held_out, config, history, output, args.data_dir
     )
     baseline_rows = [
-        row for row in baseline["designs"] if row["design_name"] in held_out_names
+        row for row in reference["designs"] if row["design_name"] in held_out_names
     ]
     comparison = {
-        "area": training.summarize_metrics(baseline_rows),
-        "near_body": report["summary"],
+        "no_attention" if attention else "area": training.summarize_metrics(
+            baseline_rows
+        ),
+        "attention" if attention else "near_body": report["summary"],
         "scope": "One fixed fold only, not a full CV result.",
     }
-    write_json(args.output_dir / "loss_comparison.json", comparison)
-    render_saved_comparisons(args.baseline_dir, output, args.data_dir)
-    print("LOSS COMPARISON", json.dumps(comparison), flush=True)
+    write_json(
+        args.output_dir
+        / ("attention_comparison.json" if attention else "loss_comparison.json"),
+        comparison,
+    )
+    render_saved_comparisons(reference_dir, output, args.data_dir)
+    print(
+        "ATTENTION COMPARISON" if attention else "LOSS COMPARISON",
+        json.dumps(comparison),
+        flush=True,
+    )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--stage", choices=("overfit", "fold", "plots", "all"), default="all"
+        "--stage",
+        choices=("overfit", "fold", "plots", "attention", "attention-plots", "all"),
+        default="all",
     )
     parser.add_argument("--design", default="Design_1")
     parser.add_argument("--overfit-epochs", type=int, default=1200)
+    parser.add_argument("--attention-tokens", type=int, default=32)
+    parser.add_argument("--attention-heads", type=int, default=4)
+    parser.add_argument(
+        "--reference-dir",
+        type=Path,
+        help="Cached no-attention near-body fold directory.",
+    )
     parser.add_argument(
         "--data-dir", type=Path, default=PROJECT_ROOT / training.DATA_DIR
     )
@@ -303,11 +383,26 @@ def main():
         "--output-dir", type=Path, default=PROJECT_ROOT / "volume_results" / "diagnosis"
     )
     args = parser.parse_args()
+    if args.stage == "attention-plots":
+        output = args.output_dir / "fold_attention"
+        report = json.loads((output / "metrics.json").read_text())
+        render_saved_comparisons(
+            Path(report["config"]["cached_reference_results"]), output, args.data_dir
+        )
+        return
     if args.stage == "plots":
         render_saved_comparisons(
             args.baseline_dir, args.output_dir / "fold_near_body", args.data_dir
         )
         return
+    if args.stage == "attention" and (
+        args.attention_tokens < 1
+        or args.attention_heads < 1
+        or training.HIDDEN_DIM % args.attention_heads
+    ):
+        parser.error(
+            "Attention requires positive tokens and heads dividing the hidden width."
+        )
     torch.set_num_threads(1)
     raw = load_all_starccm_volume_designs(args.data_dir, include_physics=True)
     data = training.prepare_data(raw, "geometry")
@@ -318,7 +413,7 @@ def main():
         parser.error("Select an available design and a positive overfit epoch count.")
     if args.stage in ("overfit", "all"):
         run_overfit(data, args)
-    if args.stage in ("fold", "all"):
+    if args.stage in ("fold", "attention", "all"):
         run_fold(data, args)
 
 

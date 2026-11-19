@@ -141,7 +141,9 @@ def normalize_data(data, scalers):
     return normalized
 
 
-def create_model(device, geom_dim=4, edge_dim=0):
+def create_model(
+    device, geom_dim=4, edge_dim=0, *, attention_tokens=0, attention_heads=4
+):
     return Milestone1_GNN(
         geom_dim=geom_dim,
         design_dim=3,
@@ -150,6 +152,8 @@ def create_model(device, geom_dim=4, edge_dim=0):
         out_dim=1,
         edge_dim=edge_dim,
         use_global=True,
+        attention_tokens=attention_tokens,
+        attention_heads=attention_heads,
     ).to(device)
 
 
@@ -164,6 +168,8 @@ def train_model(
     near_body_threshold=0.05,
     history=None,
     progress_every=0,
+    attention_tokens=0,
+    attention_heads=4,
 ):
     if epochs < 1 or not train_data:
         raise ValueError("Training requires positive epochs and at least one design.")
@@ -180,7 +186,13 @@ def train_model(
     edge_dim = (
         train_data[0]["edge_attr"].shape[1] if "edge_attr" in train_data[0] else 0
     )
-    model = create_model(device, train_data[0]["geom_norm"].shape[1], edge_dim)
+    model = create_model(
+        device,
+        train_data[0]["geom_norm"].shape[1],
+        edge_dim,
+        attention_tokens=attention_tokens,
+        attention_heads=attention_heads,
+    )
     optimizer = optim.AdamW(
         model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
     )
@@ -369,7 +381,12 @@ def cross_validate(data, device, epochs, results_dir=None, run_config=None):
         )
         scalers = fit_scalers(training)
         model = train_model(
-            normalize_data(training, scalers), device, epochs, seed=fold_seed
+            normalize_data(training, scalers),
+            device,
+            epochs,
+            seed=fold_seed,
+            attention_tokens=config.get("attention_tokens", 0),
+            attention_heads=config.get("attention_heads", 4),
         )
         fold_rows = []
         for item in normalize_data([data[index] for index in held_out], scalers):
@@ -416,6 +433,8 @@ def save_checkpoint(model, scalers, path, run_config=None):
                 "out_dim": 1,
                 "edge_dim": edge_dim,
                 "use_global": True,
+                "attention_tokens": model.attention_tokens,
+                "attention_heads": model.attention_heads,
             },
             "format_version": 2,
             "run_config": run_config or {"variant": "baseline"},
@@ -489,6 +508,13 @@ def main():
     parser.add_argument("--reference-pressure", type=float, default=REFERENCE_PRESSURE)
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument(
+        "--attention-tokens",
+        type=int,
+        default=0,
+        help="Global latent tokens per layer; 0 preserves the original GNN.",
+    )
+    parser.add_argument("--attention-heads", type=int, default=4)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--skip-cv", action="store_true")
     mode.add_argument("--cv-only", action="store_true")
@@ -505,6 +531,16 @@ def main():
     epochs = next(iter(supplied_epochs), CV_EPOCHS)
     if epochs < 1 or args.threads < 1:
         parser.error("Epochs and threads must be positive.")
+    if (
+        args.attention_tokens < 0
+        or args.attention_heads < 1
+        or (args.attention_tokens and HIDDEN_DIM % args.attention_heads)
+    ):
+        parser.error(
+            "Tokens must be nonnegative and attention heads must divide hidden width."
+        )
+    if args.attention_tokens and args.output == OUTPUT_PATH:
+        args.output = PROJECT_ROOT / "milestone1_volume_pressure_attention.pt"
     torch.set_num_threads(args.threads)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(
@@ -534,8 +570,11 @@ def main():
         "near_wall_threshold_m": 0.05,
         "design_names": [item["design_name"] for item in data],
         "cv_performed": not args.skip_cv,
+        "attention_tokens": args.attention_tokens,
+        "attention_heads": args.attention_heads,
     }
-    results_dir = args.results_dir or PROJECT_ROOT / "volume_results" / args.variant
+    result_name = f"{args.variant}_attention" if args.attention_tokens else args.variant
+    results_dir = args.results_dir or PROJECT_ROOT / "volume_results" / result_name
     if not args.skip_cv:
         cross_validate(data, device, epochs, results_dir, config)
     if args.cv_only:
@@ -543,7 +582,14 @@ def main():
     print("\n--- Training final volume model on all designs ---")
     scalers = fit_scalers(data)
     normalized = normalize_data(data, scalers)
-    model = train_model(normalized, device, epochs, seed=args.seed)
+    model = train_model(
+        normalized,
+        device,
+        epochs,
+        seed=args.seed,
+        attention_tokens=args.attention_tokens,
+        attention_heads=args.attention_heads,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     save_checkpoint(model, scalers, args.output, config)
     print(f"Saved volume checkpoint: {args.output}")

@@ -52,6 +52,80 @@ def _graph_mean(h, batch_idx):
     return sums / counts.unsqueeze(1)
 
 
+class LatentGlobalAttention(nn.Module):
+    """Exchange global information through a small, graph-isolated token set."""
+
+    def __init__(self, hidden_dim, num_tokens=32, num_heads=4):
+        super().__init__()
+        if num_tokens < 1 or num_heads < 1 or hidden_dim % num_heads:
+            raise ValueError(
+                "Positive token/head counts and a head-divisible hidden width are required."
+            )
+        self.tokens = nn.Parameter(torch.randn(1, num_tokens, hidden_dim) * 0.02)
+        self.cell_norm = nn.LayerNorm(hidden_dim)
+        self.token_norm = nn.LayerNorm(hidden_dim)
+        self.read_attention = nn.MultiheadAttention(
+            hidden_dim, num_heads, batch_first=True
+        )
+        self.token_attention = nn.MultiheadAttention(
+            hidden_dim, num_heads, batch_first=True
+        )
+        self.write_attention = nn.MultiheadAttention(
+            hidden_dim, num_heads, batch_first=True
+        )
+        self.token_ffn = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+        )
+        self.cell_ffn = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+        )
+
+    def _attend_graph(self, cells):
+        normalized = self.cell_norm(cells).unsqueeze(0)
+        tokens = (
+            self.tokens
+            + self.read_attention(
+                self.token_norm(self.tokens),
+                normalized,
+                normalized,
+                need_weights=False,
+            )[0]
+        )
+        token_input = self.token_norm(tokens)
+        tokens = (
+            tokens
+            + self.token_attention(
+                token_input,
+                token_input,
+                token_input,
+                need_weights=False,
+            )[0]
+        )
+        tokens = tokens + self.token_ffn(tokens)
+        token_input = self.token_norm(tokens)
+        updates = self.write_attention(
+            normalized,
+            token_input,
+            token_input,
+            need_weights=False,
+        )[0].squeeze(0)
+        cells = cells + updates
+        return cells + self.cell_ffn(cells)
+
+    def forward(self, cells, batch_idx):
+        output = torch.zeros_like(cells)
+        for graph_id in torch.unique(batch_idx):
+            mask = batch_idx == graph_id
+            output[mask] = self._attend_graph(cells[mask])
+        return output
+
+
 class Milestone1_GNN(nn.Module):
     def __init__(
         self,
@@ -62,8 +136,14 @@ class Milestone1_GNN(nn.Module):
         out_dim=2,
         edge_dim=0,
         use_global=False,
+        attention_tokens=0,
+        attention_heads=4,
     ):
         super().__init__()
+        if attention_tokens < 0:
+            raise ValueError("Attention token count cannot be negative.")
+        self.attention_tokens = attention_tokens
+        self.attention_heads = attention_heads
         # Input: [x, y, z, nx, ny, nz, Area] + [P_D1_r, P_D2_r, P_V]
         self.encoder = nn.Sequential(
             nn.Linear(geom_dim + design_dim, hidden_dim),
@@ -82,12 +162,22 @@ class Milestone1_GNN(nn.Module):
         self.decoder = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, out_dim)
         )
+        self.attention_layers = nn.ModuleList(
+            [
+                LatentGlobalAttention(hidden_dim, attention_tokens, attention_heads)
+                for _ in range(num_layers)
+            ]
+            if attention_tokens
+            else []
+        )
 
     def forward(self, geom, params, edge_index, edge_attr=None, batch_idx=None):
         x = torch.cat([geom, params], dim=-1)
         h = self.encoder(x)
         if batch_idx is None:
             batch_idx = torch.zeros(h.size(0), dtype=torch.long, device=h.device)
-        for layer in self.layers:
+        for index, layer in enumerate(self.layers):
             h = layer(h, edge_index, edge_attr, batch_idx)
+            if self.attention_tokens:
+                h = self.attention_layers[index](h, batch_idx)
         return self.decoder(h)
