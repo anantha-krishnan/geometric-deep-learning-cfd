@@ -7,7 +7,14 @@ from torch import nn
 
 
 class MessagePassingBlock(nn.Module):
-    def __init__(self, hidden_dim, edge_dim=0, use_global=False, attention_heads=0):
+    def __init__(
+        self,
+        hidden_dim,
+        edge_dim=0,
+        use_global=False,
+        attention_heads=0,
+        activation="default",
+    ):
         super().__init__()
         self.use_global = use_global
         self.attention_heads = attention_heads
@@ -18,20 +25,20 @@ class MessagePassingBlock(nn.Module):
         self.edge_mlp = nn.Sequential(
             nn.Linear(hidden_dim * 2 + edge_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
+            nn.Tanh() if activation == "tanh" else nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
         node_in = hidden_dim * (3 if use_global else 2)
         self.node_mlp = nn.Sequential(
             nn.Linear(node_in, hidden_dim),
             nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
+            nn.Tanh() if activation == "tanh" else nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
         if attention_heads:
             self.message_attention = nn.Sequential(
                 nn.Linear(hidden_dim * 2 + edge_dim, hidden_dim),
-                nn.LeakyReLU(0.2),
+                nn.Tanh() if activation == "tanh" else nn.LeakyReLU(0.2),
                 nn.Linear(hidden_dim, attention_heads),
             )
 
@@ -84,7 +91,7 @@ def _graph_mean(h, batch_idx):
 class LatentGlobalAttention(nn.Module):
     """Exchange global information through a small, graph-isolated token set."""
 
-    def __init__(self, hidden_dim, num_tokens=32, num_heads=4):
+    def __init__(self, hidden_dim, num_tokens=32, num_heads=4, activation="default"):
         super().__init__()
         if num_tokens < 1 or num_heads < 1 or hidden_dim % num_heads:
             raise ValueError(
@@ -105,13 +112,13 @@ class LatentGlobalAttention(nn.Module):
         self.token_ffn = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim * 2),
-            nn.GELU(),
+            nn.Tanh() if activation == "tanh" else nn.GELU(),
             nn.Linear(hidden_dim * 2, hidden_dim),
         )
         self.cell_ffn = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim * 2),
-            nn.GELU(),
+            nn.Tanh() if activation == "tanh" else nn.GELU(),
             nn.Linear(hidden_dim * 2, hidden_dim),
         )
 
@@ -168,8 +175,12 @@ class Milestone1_GNN(nn.Module):
         attention_tokens=0,
         attention_heads=4,
         message_attention_heads=0,
+        activation="default",
     ):
         super().__init__()
+        if activation not in ("default", "tanh"):
+            raise ValueError(f"Unsupported activation: {activation}")
+        self.activation = activation
         if attention_tokens < 0:
             raise ValueError("Attention token count cannot be negative.")
         self.attention_tokens = attention_tokens
@@ -178,14 +189,18 @@ class Milestone1_GNN(nn.Module):
         # Input: [x, y, z, nx, ny, nz, Area] + [P_D1_r, P_D2_r, P_V]
         self.encoder = nn.Sequential(
             nn.Linear(geom_dim + design_dim, hidden_dim),
-            nn.ReLU(),
+            nn.Tanh() if activation == "tanh" else nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
 
         self.layers = nn.ModuleList(
             [
                 MessagePassingBlock(
-                    hidden_dim, edge_dim, use_global, message_attention_heads
+                    hidden_dim,
+                    edge_dim,
+                    use_global,
+                    message_attention_heads,
+                    activation,
                 )
                 for _ in range(num_layers)
             ]
@@ -193,11 +208,15 @@ class Milestone1_GNN(nn.Module):
 
         # Output: [StaticPressure, WallShearStress]
         self.decoder = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, out_dim)
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh() if activation == "tanh" else nn.ReLU(),
+            nn.Linear(hidden_dim, out_dim),
         )
         self.attention_layers = nn.ModuleList(
             [
-                LatentGlobalAttention(hidden_dim, attention_tokens, attention_heads)
+                LatentGlobalAttention(
+                    hidden_dim, attention_tokens, attention_heads, activation
+                )
                 for _ in range(num_layers)
             ]
             if attention_tokens

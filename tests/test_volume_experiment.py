@@ -111,7 +111,9 @@ class VolumeExperimentTests(unittest.TestCase):
         self.assertIn("gnn32", names)
         self.assertIn("gnn_parameter_matched", names)
         self.assertIn("latent_attention32", names)
+        self.assertIn("neighbor_attention32_tanh", names)
         self.assertIn("neighbor_attention_parameter_matched", names)
+        self.assertIn("neighbor_attention_parameter_matched_tanh", names)
         for choice in choices:
             model = experiment.create_architecture_model(choice, torch.device("cpu"))
             self.assertEqual(model.encoder[0].out_features, choice["hidden_dim"])
@@ -125,6 +127,54 @@ class VolumeExperimentTests(unittest.TestCase):
             / latent["parameter_count"],
             0.05,
         )
+
+    def test_tanh_attention_checkpoints_preserve_activation_and_predictions(self):
+        choices = {
+            choice["name"]: choice for choice in experiment.architecture_choices()
+        }
+        data = training.prepare_data(
+            [make_item("Train_1"), make_item("Train_2")], "geometry"
+        )
+        scalers = training.fit_scalers(data)
+        item = training.normalize_data(data, scalers)[0]
+        for architecture_name in (
+            "latent_attention32_tanh",
+            "neighbor_attention32_tanh",
+            "neighbor_attention_parameter_matched_tanh",
+        ):
+            with self.subTest(architecture=architecture_name):
+                model = experiment.create_architecture_model(
+                    choices[architecture_name], torch.device("cpu")
+                )
+                self.assertTrue(
+                    any(isinstance(module, torch.nn.Tanh) for module in model.modules())
+                )
+                self.assertFalse(
+                    any(
+                        isinstance(module, (torch.nn.ReLU, torch.nn.GELU))
+                        for module in model.modules()
+                    )
+                )
+                if architecture_name.startswith("neighbor"):
+                    self.assertFalse(
+                        any(
+                            isinstance(module, torch.nn.LeakyReLU)
+                            for module in model.modules()
+                        )
+                    )
+                with tempfile.TemporaryDirectory() as directory:
+                    checkpoint = Path(directory) / "model.pt"
+                    training.save_checkpoint(model, scalers, checkpoint)
+                    restored, _, _ = training.load_checkpoint(
+                        checkpoint, torch.device("cpu")
+                    )
+                    self.assertEqual(restored.activation, "tanh")
+                    torch.testing.assert_close(
+                        experiment.forward_item(
+                            model.eval(), item, torch.device("cpu")
+                        ),
+                        experiment.forward_item(restored, item, torch.device("cpu")),
+                    )
 
     def test_ranker_exposes_tradeoffs_and_matches_metric_priorities(self):
         rows = [
@@ -158,10 +208,16 @@ class VolumeExperimentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing ranking metrics"):
             experiment.rank_architectures([{"architecture": "incomplete"}])
         with self.assertRaises(ValueError):
-            experiment.rank_architectures([
-                {"architecture": "bad", "mean_design_rmse_pa": -1,
-                 "mean_near_wall_rmse_pa": 2, "worst_design_rmse_pa": 3}
-            ])
+            experiment.rank_architectures(
+                [
+                    {
+                        "architecture": "bad",
+                        "mean_design_rmse_pa": -1,
+                        "mean_near_wall_rmse_pa": 2,
+                        "worst_design_rmse_pa": 3,
+                    }
+                ]
+            )
 
 
 if __name__ == "__main__":

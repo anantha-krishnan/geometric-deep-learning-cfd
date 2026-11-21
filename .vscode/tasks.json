@@ -1,0 +1,36 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "CFD: latent attention tanh experiment",
+			"type": "shell",
+			"command": "uv",
+			"args": [
+				"run",
+				"python",
+				"-u",
+				"compare_volume_architectures.py",
+				"--design",
+				"Design_1",
+				"--architectures",
+				"latent_attention32_tanh",
+				"--max-epochs",
+				"1000",
+				"--minimum-epochs",
+				"100",
+				"--validation-interval",
+				"10",
+				"--patience",
+				"8",
+				"--results-dir",
+				"volume_results/architecture_tanh_restart",
+				"--comparison-dir",
+				"volume_results/architecture_validation/latent_attention32",
+				"--comparison-label",
+				"Original latent attention (ReLU/GELU)"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}

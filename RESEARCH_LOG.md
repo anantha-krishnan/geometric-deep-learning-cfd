@@ -185,3 +185,104 @@ Command: `uv run python compare_volume_architectures.py --design Design_1 --max-
 - Visual spot-check: [Design_26 parameter-matched neighbour attention comparison](volume_results/architecture_neighbor_matched/neighbor_attention_parameter_matched/Design_26_comparison.png). It follows the broad pressure field but has higher reported errors than width32 neighbour attention on that case.
 - Test/quality: 35 tests pass; Ruff and ty pass for ranking files. A test initially set an unrealistically strict 3% width-match threshold; nearest legal width differs by 3.32%, so the test was adjusted to 5% and the rationale documented.
 - Interpretation caveat remains: all six outer designs were previously inspected; this is exploratory ranking, not unbiased model selection. Keep the chosen architecture provisional until new DOE designs or repeated nested splits/seeds are run.
+
+## 2026-11-19 - Latent Attention Tanh Experiment: Protocol
+
+- Hypothesis: replacing the latent model's ReLU and GELU activations with tanh could improve pressure-field accuracy; this is a hypothesis, not a measured improvement. Attention softmax is unchanged. The original model and its default activation behavior remain unchanged.
+- Match the prior latent-attention experiment: 92,097 parameters, 32 tokens, four heads, three local layers, seed 2026, 19 inner-training / 5 inner-validation / 6 previously inspected outer designs, 0.5 near-body loss mix, CPU, and inner-validation checkpoint selection. Maximum 1,000 epochs, minimum 100, check every 10, patience eight checks. The outer designs are not used to select checkpoints.
+- Command: `uv run python compare_volume_architectures.py --design Design_1 --architectures latent_attention32_tanh --max-epochs 1000 --minimum-epochs 100 --validation-interval 10 --patience 8 --results-dir volume_results/architecture_tanh --comparison-dir volume_results/architecture_validation/latent_attention32 --comparison-label "Original latent attention (ReLU/GELU)"`.
+- Outputs belong under `volume_results/architecture_tanh/latent_attention32_tanh/`; comparison images use CFD, the saved original latent model and tanh on a common pressure scale. New checkpoints record the activation; old checkpoints still load with their original activation.
+- One-epoch real-data smoke test completed under `volume_results/architecture_tanh_smoke/`; it checks the pipeline only, not accuracy. The full run is in progress. A new focused test first failed because the variant did not exist, then passed after implementation; 36 regression tests, Ruff and ty passed.
+- Deferred: test tanh on the two neighbour-attention variants one at a time; repeat nested folds/seeds or evaluate new DOE designs before selecting a production model. Further options from the earlier plan include token-count and spatial-token studies, a small-mesh full-attention feasibility check, and matched-compute controls.
+
+## 2026-11-19 - Tanh Run Interruption and Restart
+
+- The initial full run stopped for an unknown reason before writing final metrics, validation history, or comparison images. Its saved best inner-validation checkpoint was at epoch 70 with loss 0.0232954; the last completed epoch is unknown. This is not a completed comparison.
+- Preserved the partial checkpoint under `volume_results/architecture_tanh/latent_attention32_tanh/`. It does not contain optimizer or scheduler state, so an exact continuation is not available.
+- Restarted the same experiment from epoch 1 in the visible VS Code task `CFD: latent attention tanh experiment`, using `volume_results/architecture_tanh_restart/` for new artifacts. The task runs the protocol above with this changed results directory and unbuffered Python output. No neighbour variant was started.
+
+## 2026-11-19 - Latent Attention Tanh Results
+
+- The restarted run completed successfully. Training stopped at epoch 340 after eight validation checks without improvement; the selected checkpoint was epoch 260. The original ReLU/GELU model selected epoch 160. Both use the same split, seed, architecture dimensions, 92,097 parameters, loss and checkpoint selection protocol described above.
+
+| Metric across six outer designs | Original ReLU/GELU | Tanh |
+| --- | ---: | ---: |
+| Mean design RMSE [Pa] | 2.98384 | 2.92379 |
+| Mean near-body RMSE [Pa] | 11.96292 | 9.34826 |
+| Worst design RMSE [Pa] | 4.05897 | 3.96726 |
+| Pooled R-squared | 0.95836 | 0.96003 |
+| Best inner-validation loss | 0.013031 | 0.013986 |
+
+- Mean near-body RMSE improved by 21.9%, with improvements on all six designs; mean whole-domain RMSE improved by 2.0%, despite worsening on four of six. The original achieved a lower inner-validation loss; differences in selected epochs and optimization are part of this comparison, not evidence that tanh universally generalizes better.
+
+| Design | Original / tanh whole RMSE [Pa] | Original / tanh near-body RMSE [Pa] |
+| --- | ---: | ---: |
+| Design_1 | 3.812 / 3.967 | 21.343 / 17.992 |
+| Design_3 | 3.209 / 3.496 | 7.551 / 6.366 |
+| Design_4 | 3.058 / 1.595 | 8.160 / 2.371 |
+| Design_13 | 1.608 / 2.223 | 5.935 / 5.091 |
+| Design_14 | 4.059 / 3.669 | 24.524 / 21.164 |
+| Design_26 | 2.158 / 2.593 | 4.265 / 3.106 |
+
+- Inspected common-scale plots: [Design_4](volume_results/architecture_tanh_restart/latent_attention32_tanh/Design_4_comparison.png) shows an improved pressure field, while [Design_13](volume_results/architecture_tanh_restart/latent_attention32_tanh/Design_13_comparison.png) and [Design_1](volume_results/architecture_tanh_restart/latent_attention32_tanh/Design_1_comparison.png) show the whole-domain trade-off. Other plots: [Design_3](volume_results/architecture_tanh_restart/latent_attention32_tanh/Design_3_comparison.png), [Design_14](volume_results/architecture_tanh_restart/latent_attention32_tanh/Design_14_comparison.png), [Design_26](volume_results/architecture_tanh_restart/latent_attention32_tanh/Design_26_comparison.png). Each contains CFD, original latent attention and tanh.
+- Artifacts: [metrics](volume_results/architecture_tanh_restart/latent_attention32_tanh/metrics.json), [validation curve](volume_results/architecture_tanh_restart/latent_attention32_tanh/validation_curve.png), [checkpoint](volume_results/architecture_tanh_restart/latent_attention32_tanh/best_validation.pt), and saved prediction arrays in the same directory.
+- Limitations: one seed and one previously inspected outer fold, not independent external testing. No checkpoint is promoted. The two neighbour-tanh experiments and repeated nested folds or new DOE designs remain deferred.
+
+## 2026-11-20 - Width-32 Neighbour Attention Tanh: In Progress
+
+- First of the two planned neighbour tanh experiments. Variant: width 32, four edge-attention heads, three local layers; tanh replaces ReLU in the message/update MLPs and LeakyReLU in the edge-score MLP. This activation scope is explicit because retaining LeakyReLU would make the neighbour variant only partially tanh.
+- Match the prior fold-2 protocol: seed 2026, 19 inner-training / 5 inner-validation / 6 previously inspected outer designs, near-body-balanced loss, 1,000 epoch maximum, minimum 100, validate every 10 epochs, patience eight. The saved neighbour baseline has 32,109 parameters and selected epoch 180. Tanh has the same parameter count.
+- Command: `uv run python -u compare_volume_architectures.py --design Design_1 --architectures neighbor_attention32_tanh --max-epochs 1000 --minimum-epochs 100 --validation-interval 10 --patience 8 --results-dir volume_results/architecture_neighbor_tanh --comparison-dir volume_results/architecture_validation/neighbor_attention32 --comparison-label "Original neighbor attention (ReLU/LeakyReLU)"`.
+- Outputs: `volume_results/architecture_neighbor_tanh/neighbor_attention32_tanh/`, including selected checkpoint, metrics, history, validation curve, saved predictions and six CFD/baseline/tanh comparison images on shared pressure scales.
+- Focused tanh architecture and checkpoint round-trip test passed; Ruff and ty passed before launch. Training is running directly in the terminal; dataset loading completed, and the first epoch status has not printed yet. Results pending. Do not start the parameter-matched neighbour tanh run until this experiment is reviewed.
+- Progress check on 2026-11-20: process remained active at epoch 120/1,000. Best validation loss was 0.0163645 at epoch 80; checkpoint exists. Outer-test metrics and comparison images are not available yet.
+- Completed at epoch 160; best inner-validation checkpoint was epoch 80 (loss 0.0163645). Original neighbour attention selected epoch 180 (loss 0.0159981). Same fold, seed, split, loss and 32,109 parameters; no training was performed on the six outer designs during selection.
+
+| Metric across six outer designs | Original ReLU/LeakyReLU | Tanh |
+| --- | ---: | ---: |
+| Mean design RMSE [Pa] | 3.42721 | 3.39515 |
+| Mean near-body RMSE [Pa] | 11.95167 | 12.76458 |
+| Worst design RMSE [Pa] | 5.16791 | 4.34711 |
+| Pooled R-squared | 0.94505 | 0.94844 |
+
+- Mean whole-domain RMSE improved 0.94%; mean near-body RMSE worsened 6.8%. Whole-domain RMSE improved on four of six designs; near-body RMSE improved on three. Design_14 near-body RMSE regressed 24.59 -> 32.90 Pa, visible in the [Design_14 comparison](volume_results/architecture_neighbor_tanh/neighbor_attention32_tanh/Design_14_comparison.png). The [Design_4 comparison](volume_results/architecture_neighbor_tanh/neighbor_attention32_tanh/Design_4_comparison.png) shows improved near-body error but worse whole-domain error; [Design_1](volume_results/architecture_neighbor_tanh/neighbor_attention32_tanh/Design_1_comparison.png) improves both metrics slightly. Other shared-scale images: [Design_3](volume_results/architecture_neighbor_tanh/neighbor_attention32_tanh/Design_3_comparison.png), [Design_13](volume_results/architecture_neighbor_tanh/neighbor_attention32_tanh/Design_13_comparison.png), [Design_26](volume_results/architecture_neighbor_tanh/neighbor_attention32_tanh/Design_26_comparison.png).
+- Summary and per-design metrics: `volume_results/architecture_neighbor_tanh/neighbor_attention32_tanh/metrics.json`. Interpretation is exploratory: one seed and a previously inspected outer fold. No model was promoted.
+- Next, run the parameter-matched width-56 neighbour tanh variant alone, compared with `volume_results/architecture_neighbor_matched/neighbor_attention_parameter_matched/`. Keep it sequential; do not combine this result with the width-32 run as though it isolated activation from width/capacity.
+
+## 2026-11-20 - Parameter-Matched Neighbour Attention Tanh: In Progress
+
+- Started after the width-32 neighbour-tanh run completed and was reviewed. This is the width-56, four-head edge-attention model (95,157 parameters), compared directly with its saved ReLU/LeakyReLU model. It also uses tanh for the edge-score nonlinearity.
+- Same fold-2 split, seed 2026, 19/5 inner split, near-body-balanced loss, validation-selected checkpoint and 1,000/100/10/8 epoch settings. This model differs from width-32 in hidden width and parameter count; compare each only against its own activation baseline.
+- Command: `uv run python -u compare_volume_architectures.py --design Design_1 --architectures neighbor_attention_parameter_matched_tanh --max-epochs 1000 --minimum-epochs 100 --validation-interval 10 --patience 8 --results-dir volume_results/architecture_neighbor_matched_tanh --comparison-dir volume_results/architecture_neighbor_matched/neighbor_attention_parameter_matched --comparison-label "Original parameter-matched neighbor attention (ReLU/LeakyReLU)"`.
+- Dataset loading completed; training is active. Results pending. Do not start another experiment concurrently.
+- Completed at epoch 190; best inner-validation checkpoint was epoch 110 (loss 0.0177920). The original width-56 model selected epoch 120 (loss 0.0201964). Both have 95,157 parameters and used the same fold-2 split, seed, loss and checkpoint selection protocol.
+
+| Metric across six outer designs | Original ReLU/LeakyReLU | Tanh |
+| --- | ---: | ---: |
+| Mean design RMSE [Pa] | 3.47246 | 4.79624 |
+| Mean near-body RMSE [Pa] | 12.87265 | 11.22219 |
+| Worst design RMSE [Pa] | 5.63895 | 6.62190 |
+| Pooled R-squared | 0.93914 | 0.89169 |
+
+- Mean whole-domain RMSE worsened 38.1%, and tanh was worse on all six outer designs. Worst-design RMSE increased 17.4%. Mean near-body RMSE improved 12.8%, but only Design_1 and Design_14 improved individually; the other four worsened. This is a strong whole-domain regression in exchange for an aggregate near-body gain, not an overall improvement.
+
+| Design | Original / tanh whole RMSE [Pa] | Original / tanh near-body RMSE [Pa] |
+| --- | ---: | ---: |
+| Design_1 | 5.639 / 6.271 | 27.929 / 17.726 |
+| Design_3 | 2.928 / 4.326 | 8.968 / 9.715 |
+| Design_4 | 2.173 / 2.641 | 3.404 / 6.159 |
+| Design_13 | 1.844 / 3.325 | 5.945 / 6.457 |
+| Design_14 | 5.142 / 6.622 | 26.718 / 22.378 |
+| Design_26 | 3.109 / 5.593 | 4.272 / 4.898 |
+
+- Inspected common-pressure-scale comparisons: [Design_1](volume_results/architecture_neighbor_matched_tanh/neighbor_attention_parameter_matched_tanh/Design_1_comparison.png) and [Design_14](volume_results/architecture_neighbor_matched_tanh/neighbor_attention_parameter_matched_tanh/Design_14_comparison.png) show the near-body improvements; [Design_13](volume_results/architecture_neighbor_matched_tanh/neighbor_attention_parameter_matched_tanh/Design_13_comparison.png) shows a representative whole-domain regression. Other images: [Design_3](volume_results/architecture_neighbor_matched_tanh/neighbor_attention_parameter_matched_tanh/Design_3_comparison.png), [Design_4](volume_results/architecture_neighbor_matched_tanh/neighbor_attention_parameter_matched_tanh/Design_4_comparison.png), [Design_26](volume_results/architecture_neighbor_matched_tanh/neighbor_attention_parameter_matched_tanh/Design_26_comparison.png). Metrics and checkpoint: `volume_results/architecture_neighbor_matched_tanh/neighbor_attention_parameter_matched_tanh/`.
+- Limitation: this is one seed and a previously inspected outer fold. Do not promote the tanh variant; confirm only on new DOE designs or repeated nested splits if further evidence is warranted.
+
+## 2026-11-20 - IEEE Write-Up and Retrospective Analysis (No Training)
+
+- Wrote `paper/main.tex` (IEEEtran) covering all work to date. No LaTeX toolchain is installed locally, so it has not been compiled. Figures are read from the repository via `\graphicspath{{../}}`. The parameter-matched neighbour tanh run is reported as in progress, without numbers.
+- New measurement (pooled over all 30 designs): cells with wall distance <= 0.05 m make up 67.6% of cells but only 1.73% of fluid area. This quantifies why the area loss neglected the near-body region.
+- New finding: the 19 inner-training designs span P_D1_r in [0.114, 0.5], so none has P_D1_r < 0.1. All five designs with P_D1_r of about 0.05 fall outside inner training: Design_1 and Design_14 are outer test designs, and Design_9, Design_15 and Design_21 are inner-validation designs. The two outer designs that are worst for every model are therefore parametric extrapolations, and checkpoint selection mostly measures extrapolation. In the 40-epoch fold-2 runs, Design_9, Design_15 and Design_21 were in training. Revisit with stratified or space-filling inner splits.
+- Learning-rate confound: in the nested runs, cosine T_max is 1,000 but every run stopped by epoch 340. The learning rate at the selected epochs stayed between about 7.4e-4 and 9.9e-4, so checkpoints were not annealed. Inner-validation losses also fluctuate by about 3x between checks.
+- Seven-model regret ranking was computed in memory with `rank_architectures()`, with no file written. `latent_attention32_tanh` has zero regret in all three profiles because it is best on mean, near-body and worst-design RMSE. This remains exploratory evidence from one seed on a previously inspected fold.
+- Observation: the current `eda.py` reads `fields[:, 2]` (density), which was removed from the surface loader. The existing EDA figures predate that change, so the script must be updated before they can be regenerated.

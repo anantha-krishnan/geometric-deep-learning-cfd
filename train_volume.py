@@ -151,6 +151,7 @@ def create_model(
     message_attention_heads=0,
     hidden_dim=HIDDEN_DIM,
     num_layers=NUM_LAYERS,
+    activation="default",
 ):
     return Milestone1_GNN(
         geom_dim=geom_dim,
@@ -163,6 +164,7 @@ def create_model(
         attention_tokens=attention_tokens,
         attention_heads=attention_heads,
         message_attention_heads=message_attention_heads,
+        activation=activation,
     ).to(device)
 
 
@@ -454,6 +456,7 @@ def save_checkpoint(model, scalers, path, run_config=None):
                 "attention_tokens": model.attention_tokens,
                 "attention_heads": model.attention_heads,
                 "message_attention_heads": model.message_attention_heads,
+                "activation": model.activation,
             },
             "format_version": 2,
             "run_config": run_config or {"variant": "baseline"},

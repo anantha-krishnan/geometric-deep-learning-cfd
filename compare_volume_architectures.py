@@ -92,6 +92,7 @@ def create_architecture_model(architecture, device):
         message_attention_heads=architecture.get("message_attention_heads", 0),
         hidden_dim=architecture.get("hidden_dim", training.HIDDEN_DIM),
         num_layers=architecture.get("num_layers", training.NUM_LAYERS),
+        activation=architecture.get("activation", "default"),
     )
 
 
@@ -152,12 +153,14 @@ def architecture_choices(device=None):
             "attention_tokens": 0,
         },
     )
-    neighbor_reference = next(
+    latent_reference = next(
         choice for choice in choices if choice["name"] == "latent_attention32"
     )
     target_parameter_count = sum(
         parameter.numel()
-        for parameter in create_architecture_model(neighbor_reference, device).parameters()
+        for parameter in create_architecture_model(
+            latent_reference, device
+        ).parameters()
     )
     neighbor_common = {
         **common,
@@ -183,6 +186,33 @@ def architecture_choices(device=None):
             "name": "neighbor_attention_parameter_matched",
             "hidden_dim": neighbor_width,
         }
+    )
+    neighbor_reference = next(
+        choice for choice in choices if choice["name"] == "neighbor_attention32"
+    )
+    neighbor_matched_reference = next(
+        choice
+        for choice in choices
+        if choice["name"] == "neighbor_attention_parameter_matched"
+    )
+    choices.extend(
+        [
+            {
+                **latent_reference,
+                "name": "latent_attention32_tanh",
+                "activation": "tanh",
+            },
+            {
+                **neighbor_reference,
+                "name": "neighbor_attention32_tanh",
+                "activation": "tanh",
+            },
+            {
+                **neighbor_matched_reference,
+                "name": "neighbor_attention_parameter_matched_tanh",
+                "activation": "tanh",
+            },
+        ]
     )
     for choice in choices:
         choice["parameter_count"] = sum(
@@ -220,14 +250,19 @@ def rank_architectures(rows, profiles=None):
             raise ValueError(
                 f"Architecture {row.get('architecture', '<unnamed>')} has missing ranking metrics: {missing}"
             )
-        if any(not math.isfinite(float(row[key])) or float(row[key]) <= 0 for key in metrics):
+        if any(
+            not math.isfinite(float(row[key])) or float(row[key]) <= 0
+            for key in metrics
+        ):
             raise ValueError("Ranking metrics must be finite and positive.")
     criteria = {
         key: {
             name: rank + 1
             for rank, name in enumerate(
                 row["architecture"]
-                for row in sorted(rows, key=lambda item: (item[key], item["architecture"]))
+                for row in sorted(
+                    rows, key=lambda item: (item[key], item["architecture"])
+                )
             )
         }
         for key in metrics
@@ -236,7 +271,9 @@ def rank_architectures(rows, profiles=None):
     best = {key: min(float(row[key]) for row in rows) for key in metrics}
     for profile_name, weights in profiles.items():
         if not weights or any(key not in metrics for key in weights):
-            raise ValueError(f"Invalid metric weights for ranking profile {profile_name}.")
+            raise ValueError(
+                f"Invalid metric weights for ranking profile {profile_name}."
+            )
         if any(not math.isfinite(weight) or weight < 0 for weight in weights.values()):
             raise ValueError("Ranking weights must be finite and nonnegative.")
         total_weight = sum(weights.values())
@@ -248,14 +285,19 @@ def rank_architectures(rows, profiles=None):
                 (weight / total_weight) * (float(row[key]) / best[key] - 1)
                 for key, weight in weights.items()
             )
-            ranked.append({
-                **row,
-                "profile": profile_name,
-                "weighted_relative_regret": regret,
-                "criterion_ranks": {key: criteria[key][row["architecture"]] for key in metrics},
-            })
+            ranked.append(
+                {
+                    **row,
+                    "profile": profile_name,
+                    "weighted_relative_regret": regret,
+                    "criterion_ranks": {
+                        key: criteria[key][row["architecture"]] for key in metrics
+                    },
+                }
+            )
         output[profile_name] = sorted(
-            ranked, key=lambda row: (row["weighted_relative_regret"], row["architecture"])
+            ranked,
+            key=lambda row: (row["weighted_relative_regret"], row["architecture"]),
         )
     return output
 
@@ -460,7 +502,15 @@ def train_with_validation(
 
 
 def plot_comparison(
-    polygons, actual, reference, prediction, rows, architecture, outer_fold, output
+    polygons,
+    actual,
+    reference,
+    prediction,
+    rows,
+    architecture,
+    outer_fold,
+    output,
+    reference_label="Near-body GNN reference",
 ):
     fields = (actual, reference, prediction)
     low = min(float(values.min()) for values in fields)
@@ -472,7 +522,7 @@ def plot_comparison(
     coords = np.concatenate(polygons)
     titles = (
         "Actual CFD",
-        "Near-body GNN reference",
+        reference_label,
         f"{architecture['name']} | best inner-validation epoch",
     )
     for axis, values, title, metrics in zip(
@@ -526,6 +576,7 @@ def evaluate_architecture(
     data_dir,
     architecture,
     outer_fold,
+    reference_label="Near-body GNN reference",
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -572,6 +623,7 @@ def evaluate_architecture(
             architecture,
             outer_fold,
             output_dir / f"{item['design_name']}_comparison.png",
+            reference_label,
         )
     return rows
 
@@ -620,6 +672,8 @@ def main():
         help="Select the cached outer fold containing this design.",
     )
     parser.add_argument("--reference-dir", type=Path, default=DEFAULT_REFERENCE)
+    parser.add_argument("--comparison-dir", type=Path)
+    parser.add_argument("--comparison-label", default="Near-body GNN reference")
     parser.add_argument(
         "--results-dir",
         type=Path,
@@ -691,6 +745,8 @@ def main():
         "loss_mix": 0.5,
         "device": str(device),
         "outer_test_previously_inspected": True,
+        "comparison_dir": str(args.comparison_dir or args.reference_dir),
+        "comparison_label": args.comparison_label,
     }
     args.results_dir.mkdir(parents=True, exist_ok=True)
     (args.results_dir / "split.json").write_text(json.dumps(config, indent=2) + "\n")
@@ -723,11 +779,12 @@ def main():
             result["model"],
             outer_test,
             scalers,
-            args.reference_dir,
+            args.comparison_dir or args.reference_dir,
             architecture_dir,
             args.data_dir,
             architecture,
             outer_fold,
+            args.comparison_label,
         )
         summary = training.summarize_metrics(rows)
         summary.update(
