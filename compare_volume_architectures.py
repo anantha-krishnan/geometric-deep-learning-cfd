@@ -358,6 +358,7 @@ def train_with_validation(
     checkpoint_path,
     history_path,
     scalers=None,
+    model_factory=create_architecture_model,
 ):
     if (
         not train_data
@@ -370,7 +371,7 @@ def train_with_validation(
             "Training/validation sets and positive epoch settings are required."
         )
     torch.manual_seed(seed)
-    model = create_architecture_model(architecture, device)
+    model = model_factory(architecture, device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=training.LEARNING_RATE,
