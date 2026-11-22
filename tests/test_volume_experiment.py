@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import torch
 
 import compare_volume_architectures as experiment
@@ -28,6 +29,33 @@ def make_item(name, speed=2.0):
 
 
 class VolumeExperimentTests(unittest.TestCase):
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is unavailable")
+    def test_evaluate_cuda_model_on_cpu(self):
+        data = training.prepare_data([make_item("Design_1")], "geometry")
+        scalers = training.fit_scalers(data)
+        model = experiment.create_architecture_model(
+            {"name": "latent_attention32", "hidden_dim": 32, "attention_tokens": 32},
+            torch.device("cuda"),
+        )
+        actual = data[0]["pressure"].numpy().reshape(-1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            np.savez_compressed(
+                root / "Design_1.npz",
+                actual_pressure_pa=actual,
+                predicted_pressure_pa=actual,
+            )
+            with (
+                patch.object(
+                    experiment, "read_mesh", return_value=(None, None, actual)
+                ),
+                patch.object(experiment, "plot_comparison"),
+            ):
+                rows = experiment.evaluate_architecture(
+                    model, data, scalers, root, root / "output", root, {}, {}
+                )
+        self.assertEqual(len(rows), 1)
+
     def test_inner_split_is_deterministic_disjoint_and_complete(self):
         items = [make_item(f"Design_{index}") for index in range(24)]
         first = experiment.split_inner_validation(items, fraction=0.2, seed=13)

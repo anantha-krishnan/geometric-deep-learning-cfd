@@ -598,6 +598,7 @@ def evaluate_architecture(
     reference_label="Near-body GNN reference",
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
+    model = model.cpu()
     rows = []
     for item in training.normalize_data(test_data, scalers):
         prediction = training.predict_pressure(

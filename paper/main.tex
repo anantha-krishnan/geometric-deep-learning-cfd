@@ -926,6 +926,7 @@ Transolver (CPU benchmark) & 1.39 & 2.77 & n/m & n/m & n/m \\
 Transolver (GPU rerun) & \textbf{1.11} & \textbf{2.02} & n/m & n/m & n/m \\
 Two-scale latent GNN & 2.37 & 8.22 & n/m & n/m & n/m \\
 Latent GNN (geometry) & 3.32 & 10.87 & n/m & n/m & n/m \\
+Latent GNN (geometry, GPU) & 2.41 & 6.84 & n/m & n/m & n/m \\
 \bottomrule
 \end{tabular}
 \\[2pt]
@@ -950,6 +951,14 @@ devices and PyTorch builds, so the accuracy difference is not evidence that the
 GPU itself improves accuracy. A common-scale comparison of actual CFD, the CPU
 reference and the GPU rerun is saved as
 \texttt{volume\_results/gpu\_transolver\_full\_20261122/Design\_1\_benchmark\_comparison.png}.
+
+A geometry-input latent GNN rerun on the same GPU stopped at epoch 650, with
+its best checkpoint at epoch 570. Its mean held-out and near-wall RMSE were
+2.41\,Pa and 6.84\,Pa, respectively: lower than the earlier CPU latent run but
+higher than the GPU Transolver run. Different checkpoints and PyTorch builds
+confound this single-run comparison. A common-scale comparison with actual CFD,
+the CPU latent model and GPU Transolver is saved as
+\texttt{volume\_results/gpu\_latent\_attention\_geometry\_20261122/latent\_attention32/Design\_1\_benchmark\_comparison.png}.
 
 \textbf{Decision.} Pure message-passing GNNs are retained only as references.
 Further work improves Transolver one change at a time: two-scale inputs,

@@ -5,3 +5,4 @@ AIROMMinimizingDragAroundAnAerodynamicBody_input/
 volume_results/
 validation_results/
 *.pt
+public_benchmarks/

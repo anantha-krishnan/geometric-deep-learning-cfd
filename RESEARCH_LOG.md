@@ -449,6 +449,7 @@ Reference row: the current Transolver implementation (`benchmarks/transolver`). 
 | Transolver, geometry inputs (GPU rerun) | 1.110 | 2.025 | n/m | n/m | n/m |
 | Two-scale latent-attention GNN (reference) | 2.374 | 8.223 | n/m | n/m | n/m |
 | Non-invariant latent-attention GNN (reference) | 3.316 | 10.868 | n/m | n/m | n/m |
+| Latent-attention GNN, geometry inputs (GPU rerun) | 2.412 | 6.843 | n/m | n/m | n/m |
 
 - n/m = not measured yet. Measurement rules for future rows: CD error from predicted pressure integrated over the body against the logged `Cd`; until wall shear is exported this is pressure drag only and must be labelled as such. Memory = peak training memory per design (state CPU RSS or GPU peak allocated). Inference time = mean forward time per design after warm-up, with hardware and thread count recorded. Backfill these three columns for existing rows before claiming any efficiency advantage.
 
@@ -457,6 +458,12 @@ Reference row: the current Transolver implementation (`benchmarks/transolver`). 
 - Repeated the geometry-input Transolver on the same stratified fold and seed using the NVIDIA RTX PRO 4000 Blackwell laptop GPU. Training stopped at epoch 680, with the best validation checkpoint at epoch 600. The previous CPU run stopped at epoch 330, with its best checkpoint at epoch 250.
 - Across six previously inspected held-out designs, mean RMSE was 1.110 Pa and near-wall RMSE was 2.025 Pa, versus 1.387 Pa and 2.774 Pa for the CPU reference. Training took 124.2 s for 680 epochs (0.183 s/epoch), versus 823.3 s for 330 epochs (2.495 s/epoch) in the earlier CPU run. These are single runs with different stopping points, PyTorch builds and execution devices, not a controlled accuracy or performance benchmark.
 - Common-scale actual CFD, CPU reference and GPU predictions: [Design_1](volume_results/gpu_transolver_full_20261122/Design_1_benchmark_comparison.png) and [Design_14](volume_results/gpu_transolver_full_20261122/Design_14_benchmark_comparison.png). The remaining held-out comparisons and checkpoint are in `volume_results/gpu_transolver_full_20261122/`.
+
+### 2026-11-22 - Latent-attention GPU rerun
+
+- Repeated the geometry-input latent-attention model on the same stratified fold and seed using CUDA. Early stopping ended training at epoch 650; the best checkpoint was at epoch 570. The earlier CPU run's best checkpoint was at epoch 140.
+- Across six previously inspected held-out designs, mean RMSE was 2.412 Pa and near-wall RMSE was 6.843 Pa, versus 3.316 Pa and 10.868 Pa for the CPU latent reference and 1.110 Pa and 2.025 Pa for the GPU Transolver. The CPU and GPU results are single runs with different checkpoints and PyTorch builds; they do not establish that GPU training improves accuracy.
+- CPU-only evaluation initially failed because the trained model remained on CUDA. Evaluation was fixed to move the model to CPU and the held-out results were recovered from the saved checkpoint without retraining. Common-scale CFD, CPU latent, GPU Transolver and GPU latent predictions: [Design_1](volume_results/gpu_latent_attention_geometry_20261122/latent_attention32/Design_1_benchmark_comparison.png) and [Design_14](volume_results/gpu_latent_attention_geometry_20261122/latent_attention32/Design_14_benchmark_comparison.png).
 
 ### Paper-update rule
 
