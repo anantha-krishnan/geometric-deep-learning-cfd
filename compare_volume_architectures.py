@@ -27,22 +27,34 @@ from torch.utils.data import DataLoader
 
 import train_volume as training
 from dataset import CFDVolumeDataset, load_all_starccm_volume_designs
+from invariance import feature_names, reference_length
 from validate_volume import read_mesh
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_REFERENCE = PROJECT_ROOT / "volume_results" / "diagnosis" / "fold_near_body"
 
 
-def split_inner_validation(data, fraction=0.2, seed=2026):
+def split_inner_validation(data, fraction=0.2, seed=2026, stratify=False):
+    """Seeded inner split; ``stratify`` draws one validation design per body-length stratum."""
     if len(data) < 4 or not 0 < fraction < 1:
         raise ValueError(
             "An inner split needs at least four designs and a fraction in (0, 1)."
         )
     validation_count = min(len(data) - 2, max(1, round(len(data) * fraction)))
-    order = torch.randperm(
-        len(data), generator=torch.Generator().manual_seed(seed)
-    ).tolist()
-    validation_indices = set(order[:validation_count])
+    generator = torch.Generator().manual_seed(seed)
+    if stratify:
+        lengths = [reference_length(item) for item in data]
+        if any(length is None for length in lengths):
+            raise ValueError("Stratified splitting needs body bounds on every design.")
+        ranked = sorted(range(len(data)), key=lambda index: (lengths[index], index))
+        strata = np.array_split(np.asarray(ranked), validation_count)
+        validation_indices = {
+            int(stratum[torch.randint(len(stratum), (1,), generator=generator)])
+            for stratum in strata
+        }
+    else:
+        order = torch.randperm(len(data), generator=generator).tolist()
+        validation_indices = set(order[:validation_count])
     return (
         [item for index, item in enumerate(data) if index not in validation_indices],
         [item for index, item in enumerate(data) if index in validation_indices],
@@ -93,14 +105,16 @@ def create_architecture_model(architecture, device):
         hidden_dim=architecture.get("hidden_dim", training.HIDDEN_DIM),
         num_layers=architecture.get("num_layers", training.NUM_LAYERS),
         activation=architecture.get("activation", "default"),
+        design_dim=architecture.get("design_dim", 3),
     )
 
 
-def architecture_choices(device=None):
+def architecture_choices(device=None, geom_dim=5, edge_dim=4, design_dim=3):
     device = device or torch.device("cpu")
     common = {
-        "geom_dim": 5,
-        "edge_dim": 4,
+        "geom_dim": geom_dim,
+        "edge_dim": edge_dim,
+        "design_dim": design_dim,
         "num_layers": 3,
         "attention_heads": 4,
         "message_attention_heads": 0,
@@ -330,15 +344,17 @@ def validation_loss(model, validation_data, device, mix=0.5):
     losses = []
     for item in validation_data:
         predicted = forward_item(model, item, device)
+        distance, threshold = training.near_wall_distance(item)
         losses.append(
             training.near_body_weighted_mse(
                 predicted,
                 item["pressure_norm"].to(device),
                 item["geom"][:, 3].to(device),
-                item["wall_distance"].to(device),
+                distance.to(device),
                 torch.zeros(len(item["pressure"]), dtype=torch.long, device=device),
                 1,
                 mix,
+                threshold,
             ).item()
         )
     return statistics.mean(losses)
@@ -407,13 +423,15 @@ def train_with_validation(
             edge_attr = batch["edge_attr"].to(device)
             optimizer.zero_grad(set_to_none=True)
             prediction = model(geom, params, edges, edge_attr, batch_idx=batch_idx)
+            distance, threshold = training.near_wall_distance(batch)
             loss = training.near_body_weighted_mse(
                 prediction,
                 target,
                 areas,
-                batch["wall_distance"].to(device),
+                distance.to(device),
                 batch_idx,
                 batch["num_graphs"],
+                threshold=threshold,
             )
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"Non-finite training loss at epoch {epoch}.")
@@ -678,7 +696,7 @@ def main():
     parser.add_argument(
         "--results-dir",
         type=Path,
-        default=PROJECT_ROOT / "volume_results" / "architecture_validation",
+        help="Default: volume_results/architecture_validation[_invariant].",
     )
     parser.add_argument(
         "--data-dir", type=Path, default=PROJECT_ROOT / training.DATA_DIR
@@ -706,6 +724,18 @@ def main():
         ],
     )
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument(
+        "--variant",
+        choices=("geometry", *training.VARIANT_FRAMES),
+        default="geometry",
+        help="invariant: body-scaled positions; two_scale: domain-scaled positions "
+        "with body-scaled wall distance and blockage inputs.",
+    )
+    parser.add_argument(
+        "--stratify-inner",
+        action="store_true",
+        help="Pick one inner-validation design per body-length stratum.",
+    )
     args = parser.parse_args()
     if (
         args.max_epochs < 1
@@ -714,25 +744,40 @@ def main():
         or args.patience < 1
     ):
         parser.error("Epoch limits, validation interval and patience must be positive.")
+    if args.results_dir is None:
+        suffix = "" if args.variant == "geometry" else f"_{args.variant}"
+        args.results_dir = (
+            PROJECT_ROOT / "volume_results" / f"architecture_validation{suffix}"
+        )
     torch.set_num_threads(args.threads)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     raw = load_all_starccm_volume_designs(args.data_dir, include_physics=True)
-    data = training.prepare_data(raw, "geometry")
+    data = training.prepare_data(raw, args.variant)
     outer_train, outer_test, outer_fold = outer_fold_from_report(
         data, args.reference_dir / "metrics.json", args.design
     )
     inner_train, inner_validation = split_inner_validation(
-        outer_train, args.inner_fraction, args.inner_seed
+        outer_train, args.inner_fraction, args.inner_seed, args.stratify_inner
     )
     scalers = training.fit_scalers(inner_train)
     normalized_train = training.normalize_data(inner_train, scalers)
     normalized_validation = training.normalize_data(inner_validation, scalers)
-    choices = {choice["name"]: choice for choice in architecture_choices(device)}
+    choices = {
+        choice["name"]: choice
+        for choice in architecture_choices(
+            device,
+            geom_dim=normalized_train[0]["geom_norm"].shape[1],
+            edge_dim=normalized_train[0]["edge_attr"].shape[1],
+            design_dim=normalized_train[0]["params_norm"].shape[0],
+        )
+    }
     unknown = set(args.architectures) - set(choices)
     if unknown:
         parser.error(f"Unknown architecture names: {sorted(unknown)}")
     config = {
+        "variant": args.variant,
         "seed": args.inner_seed,
+        "stratified_inner_split": args.stratify_inner,
         "inner_training_designs": [item["design_name"] for item in inner_train],
         "inner_validation_designs": [item["design_name"] for item in inner_validation],
         "outer_training_designs": [item["design_name"] for item in outer_train],
@@ -754,6 +799,10 @@ def main():
     all_summaries = []
     for name in args.architectures:
         architecture = dict(choices[name])
+        if args.variant in training.VARIANT_FRAMES:
+            architecture["feature_names"] = feature_names(
+                data[0], training.VARIANT_FRAMES[args.variant]
+            )
         architecture_dir = args.results_dir / name
         architecture_dir.mkdir(parents=True, exist_ok=True)
         result = train_with_validation(

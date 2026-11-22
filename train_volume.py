@@ -16,6 +16,12 @@ from dataset import (
     collate_cfd_volume_graphs,
     load_all_starccm_volume_designs,
 )
+from invariance import (
+    NEAR_WALL_RELATIVE,
+    feature_names,
+    make_invariant,
+    reference_length,
+)
 from model import Milestone1_GNN
 
 DATA_DIR = r"AIROMMinimizingDragAroundAnAerodynamicBody_input/aero_body_3D_AI_ROM/Training_Adaptive_Sampling"
@@ -32,10 +38,14 @@ FINAL_EPOCHS = CV_EPOCHS
 SEED = 0
 DENSITY = 1.18415
 REFERENCE_PRESSURE = 0.0
+NEAR_WALL_THRESHOLD = 0.05
+VARIANTS = ("baseline", "coefficient", "geometry", "invariant", "two_scale")
+# Position frame of each invariant variant (see invariance.make_invariant).
+VARIANT_FRAMES = {"invariant": "body", "two_scale": "domain"}
 
 
 def prepare_data(data, variant, density=DENSITY, reference_pressure=REFERENCE_PRESSURE):
-    if variant not in ("baseline", "coefficient", "geometry"):
+    if variant not in VARIANTS:
         raise ValueError(f"Unknown volume model variant: {variant}")
     if (
         not math.isfinite(density)
@@ -50,7 +60,9 @@ def prepare_data(data, variant, density=DENSITY, reference_pressure=REFERENCE_PR
         item = dict(raw)
         if raw["geom"].shape[1] > 4:
             item["wall_distance"] = raw["geom"][:, 4]
-        if variant != "geometry":
+        if variant in VARIANT_FRAMES:
+            item = make_invariant(item, VARIANT_FRAMES[variant])
+        elif variant != "geometry":
             item["geom"] = raw["geom"][:, :4]
             item.pop("edge_attr", None)
         elif raw["geom"].shape[1] != 5 or "edge_attr" not in raw:
@@ -77,6 +89,19 @@ def prepare_data(data, variant, density=DENSITY, reference_pressure=REFERENCE_PR
 def area_weighted_mse(prediction, target, cell_areas):
     weights = cell_areas / cell_areas.mean().clamp_min(1e-12)
     return (weights.unsqueeze(1) * (prediction - target).square()).sum() / weights.sum()
+
+
+def near_wall_distance(source):
+    """Wall distance and near-body threshold, body-relative for invariant inputs."""
+    if "wall_distance_ref" in source:
+        return source["wall_distance_ref"], NEAR_WALL_RELATIVE
+    return source["wall_distance"], NEAR_WALL_THRESHOLD
+
+
+def model_inputs(item):
+    return item.get("node_features", item["geom"]), item.get(
+        "design_features", item["params"]
+    )
 
 
 def near_body_weighted_mse(
@@ -110,13 +135,13 @@ def fit_scalers(train_data):
     if not train_data:
         raise ValueError("Scaler fitting requires at least one design.")
     geom_scaler = RunningStandardizer()
-    geom_scaler.fit([item["geom"] for item in train_data])
+    geom_scaler.fit([model_inputs(item)[0] for item in train_data])
     params_scaler = RunningStandardizer()
     if len(train_data) == 1:
-        params_scaler.mean = train_data[0]["params"].unsqueeze(0).clone()
+        params_scaler.mean = model_inputs(train_data[0])[1].unsqueeze(0).clone()
         params_scaler.std = torch.ones_like(params_scaler.mean)
     else:
-        params_scaler.fit([item["params"].unsqueeze(0) for item in train_data])
+        params_scaler.fit([model_inputs(item)[1].unsqueeze(0) for item in train_data])
     pressure_scaler = RunningStandardizer()
     pressure_scaler.fit([item.get("target", item["pressure"]) for item in train_data])
     return geom_scaler, params_scaler, pressure_scaler
@@ -126,13 +151,12 @@ def normalize_data(data, scalers):
     geom_scaler, params_scaler, pressure_scaler = scalers
     normalized = []
     for item in data:
+        nodes, design = model_inputs(item)
         normalized.append(
             {
                 **item,
-                "geom_norm": geom_scaler.transform(item["geom"]),
-                "params_norm": params_scaler.transform(
-                    item["params"].unsqueeze(0)
-                ).squeeze(0),
+                "geom_norm": geom_scaler.transform(nodes),
+                "params_norm": params_scaler.transform(design.unsqueeze(0)).squeeze(0),
                 "pressure_norm": pressure_scaler.transform(
                     item.get("target", item["pressure"])
                 ),
@@ -152,10 +176,11 @@ def create_model(
     hidden_dim=HIDDEN_DIM,
     num_layers=NUM_LAYERS,
     activation="default",
+    design_dim=3,
 ):
     return Milestone1_GNN(
         geom_dim=geom_dim,
-        design_dim=3,
+        design_dim=design_dim,
         hidden_dim=hidden_dim,
         num_layers=num_layers,
         out_dim=1,
@@ -176,7 +201,7 @@ def train_model(
     *,
     loss_mode="area",
     near_body_mix=0.5,
-    near_body_threshold=0.05,
+    near_body_threshold=None,
     history=None,
     progress_every=0,
     attention_tokens=0,
@@ -209,6 +234,7 @@ def train_model(
         message_attention_heads=message_attention_heads,
         hidden_dim=hidden_dim,
         num_layers=num_layers,
+        design_dim=train_data[0]["params_norm"].shape[0],
     )
     optimizer = optim.AdamW(
         model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
@@ -232,15 +258,16 @@ def train_model(
             edge_attr = batch["edge_attr"].to(device) if "edge_attr" in batch else None
             prediction = model(geom, params, edge_index, edge_attr, batch_idx=batch_idx)
             if loss_mode == "near-body":
+                distance, threshold = near_wall_distance(batch)
                 loss = near_body_weighted_mse(
                     prediction,
                     target,
                     areas,
-                    batch["wall_distance"].to(device),
+                    distance.to(device),
                     batch_idx,
                     batch["num_graphs"],
                     near_body_mix,
-                    near_body_threshold,
+                    threshold if near_body_threshold is None else near_body_threshold,
                 )
             else:
                 loss = area_weighted_mse(prediction, target, areas)
@@ -309,18 +336,21 @@ def measure_design(prediction, item):
         "target_variance_integral": float(variance),
     }
     if "wall_distance" in item:
-        near_wall = item["wall_distance"].cpu() <= 0.05
-        result["near_wall_rmse_pa"] = (
-            math.sqrt(
-                float(
-                    (areas[near_wall] * error[near_wall].square()).sum()
-                    / areas[near_wall].sum()
-                )
-            )
-            if near_wall.any()
-            else None
-        )
+        near_wall = item["wall_distance"].cpu() <= NEAR_WALL_THRESHOLD
+        result["near_wall_rmse_pa"] = _masked_rmse(areas, error, near_wall)
+        length = reference_length(item)
+        if length is not None:
+            relative = item["wall_distance"].cpu() / length <= NEAR_WALL_RELATIVE
+            result["near_wall_rel_rmse_pa"] = _masked_rmse(areas, error, relative)
     return result
+
+
+def _masked_rmse(areas, error, mask):
+    if not mask.any():
+        return None
+    return math.sqrt(
+        float((areas[mask] * error[mask].square()).sum() / areas[mask].sum())
+    )
 
 
 def summarize_metrics(rows):
@@ -338,6 +368,11 @@ def summarize_metrics(rows):
         for row in rows
         if row.get("near_wall_rmse_pa") is not None
     ]
+    near_wall_rel = [
+        row["near_wall_rel_rmse_pa"]
+        for row in rows
+        if row.get("near_wall_rel_rmse_pa") is not None
+    ]
     return {
         "num_designs": len(rows),
         "mean_design_rmse_pa": statistics.mean(row["rmse_pa"] for row in rows),
@@ -348,6 +383,9 @@ def summarize_metrics(rows):
         "mean_design_r2": statistics.mean(scores) if scores else None,
         "min_design_r2": min(scores) if scores else None,
         "mean_near_wall_rmse_pa": statistics.mean(near_wall) if near_wall else None,
+        "mean_near_wall_rel_rmse_pa": statistics.mean(near_wall_rel)
+        if near_wall_rel
+        else None,
     }
 
 
@@ -442,12 +480,13 @@ def save_checkpoint(model, scalers, path, run_config=None):
     hidden_dim = model.encoder[0].out_features
     geom_dim = geom_scaler.mean.shape[1]
     edge_dim = model.layers[0].edge_mlp[0].in_features - 2 * hidden_dim
+    names = (run_config or {}).get("feature_names")
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "model_config": {
                 "geom_dim": geom_dim,
-                "design_dim": 3,
+                "design_dim": params_scaler.mean.shape[1],
                 "hidden_dim": hidden_dim,
                 "num_layers": len(model.layers),
                 "out_dim": 1,
@@ -472,9 +511,16 @@ def save_checkpoint(model, scalers, path, run_config=None):
                 "mean": pressure_scaler.mean.cpu(),
                 "std": pressure_scaler.std.cpu(),
             },
-            "input_features": ["x", "y", "z", "cell_area"]
+            "input_features": names["node"]
+            if names
+            else ["x", "y", "z", "cell_area"]
             + (["wall_distance"] if geom_dim == 5 else []),
-            "edge_features": [
+            "design_features": names["design"]
+            if names
+            else ["P_D1_r", "P_D2_r", "P_V"],
+            "edge_features": names["edge"]
+            if names
+            else [
                 "direction_x",
                 "direction_y",
                 "relative_spacing",
@@ -511,9 +557,7 @@ def main():
     )
     parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / DATA_DIR)
     parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
-    parser.add_argument(
-        "--variant", choices=("baseline", "coefficient", "geometry"), default="geometry"
-    )
+    parser.add_argument("--variant", choices=VARIANTS, default="geometry")
     parser.add_argument(
         "--epochs",
         type=int,
@@ -590,13 +634,16 @@ def main():
         "weight_decay": WEIGHT_DECAY,
         "device": str(device),
         "torch_version": str(torch.__version__),
-        "near_wall_threshold_m": 0.05,
+        "near_wall_threshold_m": NEAR_WALL_THRESHOLD,
+        "near_wall_threshold_body_lengths": NEAR_WALL_RELATIVE,
         "design_names": [item["design_name"] for item in data],
         "cv_performed": not args.skip_cv,
         "attention_tokens": args.attention_tokens,
         "attention_heads": args.attention_heads,
         "message_attention_heads": args.message_attention_heads,
     }
+    if args.variant in VARIANT_FRAMES:
+        config["feature_names"] = feature_names(data[0], VARIANT_FRAMES[args.variant])
     result_name = f"{args.variant}_attention" if args.attention_tokens else args.variant
     results_dir = args.results_dir or PROJECT_ROOT / "volume_results" / result_name
     if not args.skip_cv:

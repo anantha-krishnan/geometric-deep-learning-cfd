@@ -195,6 +195,11 @@ def parse_args():
     parser.add_argument("--validation-interval", type=int, default=10)
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument(
+        "--stratify-inner",
+        action="store_true",
+        help="Pick one inner-validation design per body-length stratum.",
+    )
     args = parser.parse_args()
     positive = (
         args.hidden_dim, args.num_layers, args.num_slices, args.attention_heads,
@@ -227,8 +232,12 @@ def main():
         data, args.reference_dir / "metrics.json", args.design
     )
     inner_train, inner_validation = experiment.split_inner_validation(
-        outer_train, args.inner_fraction, args.inner_seed
+        outer_train, args.inner_fraction, args.inner_seed, args.stratify_inner
     )
+    architecture["stratified_inner_split"] = args.stratify_inner
+    architecture["inner_validation_designs"] = [
+        item["design_name"] for item in inner_validation
+    ]
     scalers = training.fit_scalers(inner_train)
     print(
         f"{architecture['name']}: {architecture['parameter_count']:,} parameters on {device}"

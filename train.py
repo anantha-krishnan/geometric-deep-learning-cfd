@@ -9,6 +9,7 @@ from dataset import (
     collate_cfd_graphs_with_physics,
     load_all_starccm_designs,
 )
+from invariance import make_invariant
 from model import Milestone1_GNN
 from physics import compute_batch_drag, compute_design_drag
 
@@ -37,14 +38,15 @@ DRAG_WEIGHT_MIX = 0.0
 A_REF = 0.005
 EDGE_FEATURES = False
 GLOBAL_CONTEXT = True
-EDGE_DIM = 5
+# Body-scaled positions + normals, no face length on nodes, Re proxy in design inputs.
+INVARIANT_INPUTS = False
 
 
 def fit_scalers(train_data):
     geom_scaler = RunningStandardizer()
-    geom_scaler.fit([d['geom'] for d in train_data])
+    geom_scaler.fit([d.get('node_features', d['geom']) for d in train_data])
     params_scaler = RunningStandardizer()
-    params_scaler.fit([d['params'].unsqueeze(0) for d in train_data])
+    params_scaler.fit([d.get('design_features', d['params']).unsqueeze(0) for d in train_data])
     coeffs_scaler = RunningStandardizer()
     coeffs_scaler.fit([d['coeffs'] for d in train_data])
     return geom_scaler, params_scaler, coeffs_scaler
@@ -54,8 +56,10 @@ def normalize(data, scalers):
     geom_scaler, params_scaler, coeffs_scaler = scalers
     return [{
         **item,
-        'geom_norm': geom_scaler.transform(item['geom']),
-        'params_norm': params_scaler.transform(item['params'].unsqueeze(0)).squeeze(0),
+        'geom_norm': geom_scaler.transform(item.get('node_features', item['geom'])),
+        'params_norm': params_scaler.transform(
+            item.get('design_features', item['params']).unsqueeze(0)
+        ).squeeze(0),
         'fields_norm': coeffs_scaler.transform(item['coeffs']),
     } for item in data]
 
@@ -68,8 +72,11 @@ def train_model(train_data, coeffs_scaler, device):
         collate_fn=collate_cfd_graphs_with_physics
     )
     model = Milestone1_GNN(
-        geom_dim=7, design_dim=3, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS, out_dim=2,
-        edge_dim=EDGE_DIM if EDGE_FEATURES else 0, use_global=GLOBAL_CONTEXT
+        geom_dim=train_data[0]['geom_norm'].shape[1],
+        design_dim=train_data[0]['params_norm'].shape[0],
+        hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS, out_dim=2,
+        edge_dim=train_data[0]['edge_attr'].shape[1] if EDGE_FEATURES else 0,
+        use_global=GLOBAL_CONTEXT,
     ).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS, eta_min=LEARNING_RATE * 1e-2)
@@ -133,6 +140,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Hardware backend: {device}")
     raw_data = load_all_starccm_designs(DATA_DIR)
+    if INVARIANT_INPUTS:
+        raw_data = [make_invariant(item) for item in raw_data]
 
     print(f"\n--- {NUM_FOLDS}-fold cross-validation ({len(raw_data)} designs) ---")
     results = cross_validate(raw_data, device)

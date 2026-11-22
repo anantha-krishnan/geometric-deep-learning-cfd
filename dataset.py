@@ -10,6 +10,10 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from invariance import bounding_box
+
+BODY_BOUNDARY = "WALL"
+
 
 # ==============================================================================
 # 1. NORMALIZATION UTILITY
@@ -125,10 +129,14 @@ def load_all_starccm_designs(root_dir):
         params_tensor = torch.tensor(log_info["params"], dtype=torch.float32)
 
         with h5py.File(simh_path, "r") as f:
-            wall_mesh = f["Meshes/FvMesh 1/Parts/Surfaces/Domain/WALL"]
+            parts = f["Meshes/FvMesh 1/Parts/Surfaces/Domain"]
+            wall_mesh = parts[BODY_BOUNDARY]
             vertex_list = np.array(wall_mesh["VertexList/VertexList"])
             coord = np.array(wall_mesh["Coord"])
             num_faces = len(wall_mesh["VertexList/VertexList_lengths"])
+            domain_points = np.concatenate(
+                [np.asarray(part["Coord"]) for part in parts.values()]
+            )
 
             face_data = f["States/ROM/Parts/Surfaces/Domain/WALL/FaceData"]
             centroids = np.array(face_data["CentroidFieldFunction"])
@@ -185,6 +193,9 @@ def load_all_starccm_designs(root_dir):
                 "true_drag": log_info["true_drag"],
                 "true_cd": log_info["true_cd"],
                 "design_name": folder_name,
+                "mesh_kind": "surface",
+                "body_bounds": bounding_box(coord[np.unique(vertex_list)]),
+                "domain_bounds": bounding_box(domain_points),
             }
         )
 
@@ -292,11 +303,16 @@ def load_all_starccm_volume_designs(root_dir, include_physics=False):
             interior_edges = _face_edges(mesh)
             boundary_cells = []
             boundary_edges = []
-            for boundary in mesh["Boundaries"].values():
+            body_vertices = None
+            for name, boundary in mesh["Boundaries"].items():
                 boundary_cells.extend(
                     np.asarray(boundary["FaceCellIndex"], dtype=np.int64)[:, 0]
                 )
                 boundary_edges.extend(_face_edges(boundary))
+                if name == BODY_BOUNDARY:
+                    body_vertices = np.unique(boundary["VertexList/VertexList"])
+            if body_vertices is None:
+                raise ValueError(f"{folder_name} has no {BODY_BOUNDARY} boundary.")
             boundary_cells = np.asarray(boundary_cells, dtype=np.int64)
             boundary_edges = np.asarray(boundary_edges, dtype=np.int64)
 
@@ -341,6 +357,9 @@ def load_all_starccm_volume_designs(root_dir, include_physics=False):
             "pressure": torch.from_numpy(pressure),
             "edge_index": edge_index,
             "design_name": folder_name,
+            "mesh_kind": "volume",
+            "body_bounds": bounding_box(coords[body_vertices]),
+            "domain_bounds": bounding_box(coords),
         }
         if include_physics:
             item["geom"] = torch.cat([geom, torch.from_numpy(wall_distance)], dim=1)
@@ -471,4 +490,8 @@ def collate_cfd_volume_graphs(batch):
         collated["edge_attr"] = torch.cat([item["edge_attr"] for item in batch], dim=0)
     if "wall_distance" in batch[0]:
         collated["wall_distance"] = torch.cat([item["wall_distance"] for item in batch])
+    if "wall_distance_ref" in batch[0]:
+        collated["wall_distance_ref"] = torch.cat(
+            [item["wall_distance_ref"] for item in batch]
+        )
     return collated
