@@ -1,0 +1,188 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from benchmarks.airfrans.data import build_features, fit_normalization, normalize_case
+from benchmarks.airfrans.evaluate import summarize
+from benchmarks.airfrans.evaluation import predict_full, pressure_scores
+from benchmarks.airfrans.slice_dataset import create_reduced_dataset
+from benchmarks.airfrans.splits import build_reduced_splits, parse_case
+from benchmarks.airfrans.training import physics_loss, positional_features
+
+
+def make_case(index):
+    speed = 31 + index * 0.1
+    angle = -5 + (index % 20)
+    if index % 2:
+        return f"airFoil2D_SST_{speed}_{angle}_2.0_4.0_1.0_12.0"
+    return f"airFoil2D_SST_{speed}_{angle}_2.0_4.0_12.0"
+
+
+class AirfransSplitTests(unittest.TestCase):
+    def test_parse_airfoil_families(self):
+        self.assertEqual(parse_case(make_case(0))["family"], 4)
+        self.assertEqual(parse_case(make_case(1))["family"], 5)
+        self.assertEqual(parse_case(make_case(1))["speed"], 31.1)
+
+    def test_splits_are_deterministic_and_keep_original_boundaries(self):
+        cases = [make_case(index) for index in range(120)]
+        manifest = {"full_train": cases[:100], "full_test": cases[100:]}
+        first = build_reduced_splits(manifest, 40, 6, 8, seed=2026)
+        self.assertEqual(first, build_reduced_splits(manifest, 40, 6, 8, seed=2026))
+        self.assertEqual(
+            [len(first[key]) for key in ("train", "validation", "test")], [40, 6, 8]
+        )
+        self.assertTrue(set(first["train"]) <= set(cases[:90]))
+        self.assertTrue(set(first["validation"]) <= set(cases[90:100]))
+        self.assertTrue(set(first["test"]) <= set(cases[100:]))
+        self.assertFalse(set(first["train"]) & set(first["test"]))
+
+    def test_rejects_overlapping_or_oversized_splits(self):
+        cases = [make_case(index) for index in range(30)]
+        with self.assertRaises(ValueError):
+            build_reduced_splits(
+                {"full_train": cases[:20], "full_test": cases[19:]}, 4, 1, 4
+            )
+        with self.assertRaises(ValueError):
+            build_reduced_splits(
+                {"full_train": cases[:20], "full_test": cases[20:]}, 19, 1, 4
+            )
+
+
+class AirfransSubsetTests(unittest.TestCase):
+    def test_creates_self_contained_dataset_with_exact_split_membership(self):
+        cases = [make_case(index) for index in range(12)]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            for name in cases:
+                folder = source / name
+                folder.mkdir()
+                (folder / f"{name}_internal.vtu").write_bytes(b"internal")
+                (folder / f"{name}_aerofoil.vtp").write_bytes(b"surface")
+                (folder / f"{name}_freestream.vtp").write_bytes(b"unused")
+            (source / "manifest.json").write_text(
+                json.dumps({"full_train": cases[:8], "full_test": cases[8:]})
+            )
+            splits = {
+                "seed": 7,
+                "source_manifest": "local path removed",
+                "splits": {
+                    "train": cases[:4],
+                    "validation": cases[4:8],
+                    "test": cases[8:11],
+                },
+            }
+            split_file = root / "splits.json"
+            split_file.write_text(json.dumps(splits))
+            output = root / "reduced"
+            create_reduced_dataset(source, split_file, output)
+            manifest = json.loads((output / "manifest.json").read_text())
+            packaged_splits = json.loads((output / "splits.json").read_text())
+            self.assertEqual(len(manifest["full_train"]), 8)
+            self.assertEqual(len(manifest["full_test"]), 3)
+            self.assertEqual(packaged_splits["splits"], splits["splits"])
+            self.assertNotIn(
+                "freestream", " ".join(str(path) for path in output.rglob("*"))
+            )
+            self.assertEqual(len(list(output.rglob("*_internal.vtu"))), 11)
+            with self.assertRaises(FileExistsError):
+                create_reduced_dataset(source, split_file, output)
+
+
+class AirfransDataTests(unittest.TestCase):
+    def test_features_match_surface_coordinates_and_reference_signs(self):
+        points = np.array([[0, 0], [1, 0], [0.5, 1]], dtype=float)
+        velocity = np.array([[0, 0], [0, 0], [2, 1]], dtype=float)
+        data = build_features(
+            "airFoil2D_SST_10_0_2_4_12",
+            points,
+            velocity,
+            np.array([3, 4, 5]),
+            np.array([0, 0, 0.2]),
+            np.array([0, 0, -1]),
+            points[[1, 0]],
+            np.array([[0, 1], [1, 0]], dtype=float),
+        )
+        np.testing.assert_array_equal(data["surface"], [True, True, False])
+        np.testing.assert_allclose(data["x"][:, 2:4], [[10, 0]] * 3)
+        np.testing.assert_allclose(data["x"][:, 5:], [[-1, 0], [0, -1], [0, 0]])
+        np.testing.assert_allclose(data["x"][:, 4], [0, 0, 1])
+        self.assertEqual(data["y"].shape, (3, 4))
+
+    def test_normalization_uses_node_weighted_training_statistics(self):
+        cases = [
+            {"x": np.array([[1.0], [3.0]]), "y": np.array([[2.0], [4.0]])},
+            {"x": np.array([[5.0]]), "y": np.array([[6.0]])},
+        ]
+        statistics = fit_normalization(cases)
+        np.testing.assert_allclose(statistics["x_mean"], [3.0])
+        np.testing.assert_allclose(statistics["y_mean"], [4.0])
+        normalized = normalize_case(cases[0], statistics)
+        self.assertLess(float(normalized["x"][0, 0]), 0)
+        self.assertEqual(float(cases[0]["x"][0, 0]), 1.0)
+
+
+class AirfransTrainingTests(unittest.TestCase):
+    def test_reference_position_features(self):
+        distances = positional_features(torch.tensor([[-2.0, -1.5], [4.0, 1.5]]))
+        self.assertEqual(tuple(distances.shape), (2, 64))
+        self.assertEqual(float(distances[0, 0]), 0.0)
+        self.assertEqual(float(distances[1, -1]), 0.0)
+
+    def test_loss_weights_volume_and_surface_equally(self):
+        predictions = torch.tensor([[2.0] * 4, [1.0] * 4, [1.0] * 4])
+        targets = torch.zeros_like(predictions)
+        surface = torch.tensor([True, False, False])
+        self.assertEqual(float(physics_loss(predictions, targets, surface)), 5.0)
+
+
+class AirfransEvaluationTests(unittest.TestCase):
+    def test_pressure_scores_separate_surface_and_volume(self):
+        targets = np.zeros((3, 4), dtype=np.float32)
+        predictions = targets.copy()
+        predictions[:, 2] = [2, 1, 3]
+        scores = pressure_scores(predictions, targets, np.array([True, False, False]))
+        self.assertEqual(scores["surface_pressure_mse"], 4.0)
+        self.assertEqual(scores["volume_pressure_mse"], 5.0)
+
+    def test_inference_covers_every_node_and_enforces_wall_conditions(self):
+        class DummyModel(torch.nn.Module):
+            def forward(self, inputs, positions):
+                return torch.ones((len(inputs), 4), device=inputs.device)
+
+        case = {
+            "x": np.zeros((10, 7)),
+            "pos": np.zeros((10, 2)),
+            "surface": np.array([True] + [False] * 9),
+        }
+        statistics = {"y_mean": np.zeros(4), "y_std": np.ones(4)}
+        predictions, rounds = predict_full(DummyModel(), case, statistics, 4, 42, "cpu")
+        np.testing.assert_array_equal(predictions[0], [0, 0, 1, 0])
+        np.testing.assert_array_equal(predictions[1:], np.ones((9, 4)))
+        self.assertGreaterEqual(rounds, 3)
+
+    def test_summary_serializes_undefined_rank_correlation_as_null(self):
+        summary = summarize(
+            {
+                "reference": [
+                    {
+                        "volume_pressure_mse": 1.0,
+                        "surface_pressure_mse": 2.0,
+                        "lift_relative_error": 0.1,
+                        "true_lift": 1.0,
+                        "predicted_lift": 0.9,
+                    }
+                ]
+            }
+        )
+        self.assertIsNone(summary["reference"]["lift_spearman"])
+
+
+if __name__ == "__main__":
+    unittest.main()
