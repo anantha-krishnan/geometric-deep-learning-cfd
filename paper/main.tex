@@ -888,6 +888,74 @@ Model & Balanced & Whole & Near-body \\
 \end{tabular}
 \end{table}
 
+% TODO(rough draft): polish this subsection; added 2026-11-22.
+\subsection{Scale Invariance, Stratified Selection and Transolver}
+\label{sec:exp_transolver}
+\textbf{Body-scaled inputs failed.} Scaling positions and wall distance by the
+body's streamwise length $L_\mathrm{ref}$ (and dropping cell size from node
+inputs) worsened the latent model to 5.35\,Pa mean and 10.01\,Pa worst-design
+RMSE. Diagnosis: body length varies $12.7\times$ across designs but the
+$3\times1$\,m channel is fixed, so small bodies reach $x/L_\mathrm{ref}\approx48$
+while training never exceeded 16.7; 70--88\,\% of their fluid area lay outside
+the training input range. The flow is confined, so blockage and distance to the
+outlet are missing dimensionless groups when only $L_\mathrm{ref}$ is used.
+
+\textbf{Two fixes.} (i) A \emph{two-scale} input: positions normalised by the
+fluid-domain box (bounded in $[0,1]$), wall distance by $L_\mathrm{ref}$, and
+blockage plus a Reynolds proxy as design inputs. (ii) A stratified inner split
+that draws one validation design per body-length stratum, so small bodies appear
+in training. The outer six test designs are unchanged.
+
+\textbf{Transolver.} We implemented Transolver~\cite{wu2024transolver}
+(physics-attention over learned soft slices; mesh edges unused) as an external
+benchmark and trained it under the identical nested protocol.
+Table~\ref{tab:h2h} is the running head-to-head table; every subsequent
+addition is appended as a new row on the same split.
+
+\begin{table}[!t]
+\centering
+\caption{Running Head-to-Head Comparison (Stratified Fold~2, Six Outer Designs)}
+\label{tab:h2h}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lrrrrr}
+\toprule
+Model & RMSE & Near-wall & $C_D$ err. & Mem. & Inf. \\
+ & [Pa] & [Pa] & [\%] & [GB] & time \\
+\midrule
+Transolver (CPU benchmark) & 1.39 & 2.77 & n/m & n/m & n/m \\
+Transolver (GPU rerun) & \textbf{1.11} & \textbf{2.02} & n/m & n/m & n/m \\
+Two-scale latent GNN & 2.37 & 8.22 & n/m & n/m & n/m \\
+Latent GNN (geometry) & 3.32 & 10.87 & n/m & n/m & n/m \\
+\bottomrule
+\end{tabular}
+\\[2pt]
+\footnotesize Near-wall: wall distance $\le0.05$\,m. n/m: not yet measured.
+\end{table}
+
+Two-scale inputs improved the matched latent GNN on all six designs in
+whole-domain RMSE (mean $-28$\,\%, worst $-38$\,\%), but Transolver, with
+27{,}757 parameters versus 92{,}161, is better on every metric and roughly
+$3\times$ better near the wall. The hypothesis that face-to-face message passing
+would win near walls is not supported. Caveats: the two-scale run used a
+body-relative near-wall loss band ($0.15\,L_\mathrm{ref}$) while the others used
+0.05\,m; Transolver used geometry inputs; one seed on a reused fold.
+Fig.~(TODO) should show Design\_14 with CFD, both GNNs and Transolver on a
+shared scale (\texttt{volume\_results/stratified\_20261122/transolver32/}).
+
+The same Transolver protocol was rerun on an NVIDIA RTX PRO 4000 laptop GPU.
+It reached its best validation checkpoint at epoch 600 and stopped at epoch 680,
+compared with epochs 250 and 330 in the earlier CPU run. Mean held-out RMSE
+was 1.11\,Pa and near-wall RMSE was 2.02\,Pa. These single runs use different
+devices and PyTorch builds, so the accuracy difference is not evidence that the
+GPU itself improves accuracy. A common-scale comparison of actual CFD, the CPU
+reference and the GPU rerun is saved as
+\texttt{volume\_results/gpu\_transolver\_full\_20261122/Design\_1\_benchmark\_comparison.png}.
+
+\textbf{Decision.} Pure message-passing GNNs are retained only as references.
+Further work improves Transolver one change at a time: two-scale inputs,
+area-weighted slicing (discretisation-invariant slice averages), a corrected
+learning-rate schedule, seeds and capacity, then conservation losses.
+
 % =============================================================================
 \section{Discussion}
 \label{sec:discussion}
@@ -1010,6 +1078,17 @@ transformer/operator model.
 \item \textbf{Physical outputs.} Integrate predicted wall pressure to drag and
 compare with STAR-CCM+ reports; consider pressure-drop prediction.
 \item \textbf{Compute accounting.} Record FLOPs, memory and wall time per model.
+\item \textbf{Public benchmarks.} Final claims require standardised community
+benchmarks with official splits and metrics and published baselines: AirfRANS
+(2D RANS, closest to this study), DrivAerNet/DrivAerNet++, the 3D Ahmed body
+and ShapeNet Car. This requires a 3D loader and GPU training.
+\item \textbf{Conservation.} Re-export velocity, eddy viscosity and the
+Spalart--Allmaras variable from STAR-CCM+; add finite-volume continuity and
+momentum residuals, measured relative to the residual of the CFD truth under
+our discrete operator.
+\item \textbf{Turbulence closure.} Learn a cell-local, invariant-feature model
+of eddy viscosity across geometries; improving on the closure itself needs
+higher-fidelity (LES/DNS) data.
 \end{enumerate}
 No checkpoint is to be promoted to production before step~1.
 
@@ -1023,8 +1102,11 @@ strict protocols. Pressure-coefficient targets are a robust improvement. A
 near-body-balanced loss corrects a severe imbalance created by mesh refinement.
 Global latent-token attention outperformed a parameter-matched plain GNN on one
 nested fold, and $\tanh$ activations further reduced near-body error for that
-model by 21.9\,\%, giving the best observed results (2.92\,Pa mean,
-9.35\,Pa near-body, 3.97\,Pa worst-design RMSE). These conclusions are
+model by 21.9\,\%, giving the best GNN results on the original split (2.92\,Pa mean,
+9.35\,Pa near-body, 3.97\,Pa worst-design RMSE). After correcting the split and
+the input scaling (Section~\ref{sec:exp_transolver}), a Transolver benchmark
+became clearly best (1.39\,Pa mean, 2.77\,Pa near-wall), and it is now the
+baseline for further improvements. These conclusions are
 provisional: they rest on one seed and a reused outer fold, and the hardest
 cases are parametric extrapolations. The project's main methodological lesson
 is that aggregate metrics must be paired with shared-scale field images,

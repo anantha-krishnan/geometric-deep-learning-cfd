@@ -331,3 +331,133 @@ Command: `uv run python compare_volume_architectures.py --design Design_1 --max-
 - Known residual extrapolation: linear d/L_ref still reaches about 32 on small bodies; stratification brings such values into training but the feature is unbounded.
 - Protocol: same outer fold, seed 2026, 1,000/100/10/8 epoch settings. Run sequentially on the stratified split: (a) non-invariant `geometry` latent_attention32, as the matched baseline; (b) `two_scale` latent_attention32; (c) Transolver (geometry inputs). Loss band still differs: 0.05 m for (a) and (c), 0.15 L_ref for (b). Outputs: `volume_results/stratified_20261122/{geometry,two_scale,transolver32}/`. The Transolver run writes four-panel common-scale comparisons (CFD, both latent models, Transolver).
 - Verification before launch: 51 tests pass, including bounded domain-frame positions, blockage value, unchanged edges/wall-distance features between frames, and deterministic stratification; Ruff and ty pass. Results pending.
+- The first background launch stopped silently during stage (a), leaving only a checkpoint; no metrics were produced. All three stages were rerun from scratch in the foreground.
+
+## 2026-11-22 - Two-Scale and Stratified-Split Results
+
+Same outer fold 2 (six previously inspected designs), stratified inner split (validation Design_5, Design_9, Design_17, Design_19, Design_20), seed 2026, 1,000/100/10/8 epoch settings, CPU.
+
+| Model (stratified split) | Params | Best epoch | Mean RMSE [Pa] | Worst RMSE [Pa] | Near-wall 0.05 m [Pa] | Near-wall 0.15 L_ref [Pa] | Pooled R-squared |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Non-invariant latent attention (geometry) | 92,097 | 140 | 3.316 | 4.520 | 10.868 | 13.636 | 0.9489 |
+| Two-scale latent attention | 92,161 | 280 | 2.374 | 2.818 | 8.223 | 7.216 | 0.9744 |
+| Transolver (geometry inputs) | 27,757 | 250 | 1.387 | 1.835 | 2.774 | 4.899 | 0.9913 |
+
+| Design | Geometry / two-scale whole RMSE [Pa] | Geometry / two-scale near-wall 0.05 m [Pa] |
+| --- | ---: | ---: |
+| Design_1 | 3.28 / 2.82 | 13.47 / 13.79 |
+| Design_3 | 4.47 / 2.63 | 14.61 / 7.34 |
+| Design_4 | 2.46 / 2.20 | 6.87 / 4.65 |
+| Design_13 | 1.84 / 1.21 | 8.45 / 3.41 |
+| Design_14 | 3.32 / 2.82 | 14.47 / 14.85 |
+| Design_26 | 4.52 / 2.57 | 7.34 / 5.30 |
+
+- Two-scale versus its matched baseline: whole-domain RMSE improved on all six designs (mean -28%, worst -38%). The 0.05 m near-wall RMSE improved on four designs but slightly worsened on the two small-body designs (Design_1, Design_14). The body-scaled `invariant` failure is resolved on this split: worst design 10.01 -> 2.82 Pa.
+- Transolver is the best model on every metric, by a wide margin near the wall (2.77 versus 8.22 Pa). Transolver also improved strongly versus its earlier random-split run (mean 2.49 -> 1.39 Pa, near-wall 10.62 -> 2.77 Pa), so the stratified split is a large effect for all models, likely because small bodies now appear in training.
+- Visual inspection, common pressure scales: [Design_1](volume_results/stratified_20261122/transolver32/Design_1_benchmark_comparison.png) and [Design_14](volume_results/stratified_20261122/transolver32/Design_14_benchmark_comparison.png). Transolver reproduces the stagnation and wake regions smoothly. Both latent-attention models show a speckled, patchy pressure region ahead of the body on the small bodies; the non-invariant model also shows a broad error lobe behind the body that two-scale reduces. Other designs: `volume_results/stratified_20261122/transolver32/Design_*_benchmark_comparison.png`. Metrics: `benchmark_summary.csv` there, and each model's `metrics.json`.
+- Confounds and limitations: (1) the near-wall loss band differs (0.15 L_ref for two-scale, 0.05 m for the other two), so the two-scale gain mixes input and loss changes; (2) Transolver uses geometry inputs and a different architecture with fewer parameters; (3) the geometry baseline on the stratified split (3.32 Pa) is worse than on the random split (2.98 Pa), showing split-to-split variation of a similar order to some differences; (4) one seed, one previously inspected outer fold; inner-validation losses are not comparable with earlier splits. No model is promoted.
+- Next candidates: Transolver with two-scale inputs (separates inputs from architecture); two-scale with the 0.05 m loss band (separates inputs from loss); repeated seeds or folds before drawing conclusions.
+
+## 2026-11-22 - Decision: Step Away from Pure GNN; Transolver Improvement Plan
+
+- Decision: stop investing in pure message-passing GNN variants. On the stratified split, Transolver (27,757 parameters) beats the best GNN (two-scale latent attention, 92,161 parameters) by 42% in mean RMSE (1.39 vs 2.37 Pa) and about 3x near the wall (2.77 vs 8.22 Pa, 0.05 m band). The hypothesis that face-to-face message passing would win near the wall was not supported. The two largest gains so far (stratified split, two-scale inputs) are architecture-agnostic and can be carried over. GNN code and checkpoints stay as frozen references.
+- Caveat: one seed, one previously inspected outer fold; the geometry baseline moved by about 0.3 Pa between splits alone. A 3x near-wall gap is unlikely to be noise, but confirm with seeds before promoting.
+- Plan, implemented one step at a time on the same stratified fold-2 split, each compared against the previous step with common-scale CFD/prediction images:
+  1. Two-scale inputs for Transolver. It currently receives raw cell area as a node input, which is mesh-dependent; two-scale removes it and adds blockage and the Reynolds proxy. Separates the input effect from the architecture effect.
+  2. Area-weighted slicing. Slice tokens are currently unweighted averages over cells, so refined regions (boundary layer) dominate the tokens and the result depends on mesh density. Weighting each cell by its area turns the slice average into a quadrature of a field integral, which is the discretisation-invariant form.
+  3. Learning-rate schedule. Every nested run stopped at epoch 250-350 with cosine T_max = 1,000, so the learning rate never annealed. Tie the schedule to the realistic training length or use plateau-based decay; this affects all models.
+  4. Seed check (2-3 seeds, about 14 minutes each), then capacity (64 slices, width 64) and the near-wall band question (0.05 m vs 0.15 L_ref).
+  5. Optional hybrid: one local message-passing layer inside Transolver, only if near-wall detail is still the weak spot after steps 1-3.
+- Once Transolver becomes the main line, consider moving it out of `benchmarks/`.
+
+### Physics in the Loss: Current State and Limits
+
+- The loss is purely data-driven: area-normalized squared error on the pressure coefficient, mixed 50/50 between whole domain and near-body band. No momentum or continuity term is used.
+- The volume export contains only cell centroids, wall distance and pressure. Momentum and continuity residuals need the velocity field (and viscosity); the solver is Spalart-Allmaras RANS per the run logs, so a faithful residual would also need eddy viscosity. A Navier-Stokes residual therefore requires exporting velocity (and ideally turbulent viscosity) from STAR-CCM+ first; it cannot be added with the current data.
+- Weaker pressure-only constraints are possible now: (a) the 0 Pa outlet condition; (b) near-zero wall-normal pressure gradient at the body (boundary-layer approximation); (c) a global channel balance against the logged `PressureDrop`, and a pressure-drag consistency check against the logged `Drag` (which also includes shear, so only partial). These are candidate regularizers, not momentum conservation, and are deferred until after steps 1-3.
+
+## 2026-11-22 - Discussion: Conservation Losses, Turbulence Closure, Multi-Scale Models (Planning, No Code)
+
+### 1. Conservation: re-export from STAR-CCM+ (user action)
+
+- Decision: the user will re-export the 30 designs from STAR-CCM+ with the fields needed for continuity and momentum residuals. Until then, continue Transolver steps 1-3, which do not depend on the new data.
+- Export checklist (same `Volume_Dataset.simh` layout, same mesh, cell-centred unless noted; exact STAR-CCM+ field names to be confirmed in the tool):
+  - Velocity vector (u, v; w is zero in 2D), pressure (already present), density (to confirm it is constant).
+  - Molecular dynamic viscosity, turbulent (eddy) viscosity, and the Spalart-Allmaras transported variable (modified diffusivity, nu-tilde). Eddy viscosity is required for the viscous/Reynolds-stress flux; nu-tilde is needed for any closure work.
+  - Optional but useful: velocity gradient tensor and vorticity as exported by STAR (lets us check our own gradient reconstruction), turbulent viscosity ratio.
+  - Interior-face mass flux, if exportable: lets us verify discrete continuity of the truth data on our reconstructed mesh.
+  - Boundary face values on IN, OUT, TOP, BOTTOM and WALL: velocity and pressure; on WALL also wall shear stress and y+.
+  - Solver metadata: boundary types (are TOP/BOTTOM slip or no-slip?), inlet velocity and turbulence conditions (intensity, viscosity ratio or nu-tilde), outlet type, discretization schemes, final residual levels. Needed to build boundary fluxes consistently.
+- Implementation plan once data arrives:
+  - A. Loader reads the new fields; build a differentiable finite-volume operator from the existing face connectivity (face area vectors, owner/neighbour cells, boundary faces). Use the integral (finite-volume) form, not pointwise autodiff residuals: it is consistent with the solver, works on any mesh, and is discretisation-consistent, which fits the invariance goal.
+  - B. First measure the residual of the CFD truth itself under our operator. Our reconstruction will not exactly match STAR-CCM+'s discretization (gradient reconstruction, interpolation, upwinding), so truth residuals will not be zero, especially in thin near-wall cells. Physics losses must be measured relative to this baseline, not driven to zero.
+  - C. Extend Transolver outputs to non-dimensional u/V, v/V, p/q and log(nu_t/nu). Loss = data term + lambda_c * continuity + lambda_m * momentum, non-dimensionalized by q * L_ref (or channel scales), ramped in after a data-only warm-up. Loss-term balancing is a known failure mode (gradient pathologies), so use adaptive weighting or careful normalization and log each term.
+  - D. Evaluate whether conservation improves pressure RMSE, near-wall error and especially the small-body/extrapolation designs, not just residual levels. Physics losses are expected to help most where data are sparse.
+- Risks: near-wall residuals dominated by viscous terms on high-aspect-ratio cells; boundary-flux treatment errors; predicting four fields with the same capacity may cost pressure accuracy.
+
+### 2. Generalised turbulence closure (research track)
+
+- Important limitation: all training data are Spalart-Allmaras RANS. A model trained only on SA outputs can at best reproduce SA's closure; it cannot learn a better closure. Improving the closure itself requires higher-fidelity targets (LES/DNS, experiments, or at least a more general RANS model such as a Reynolds-stress model) for at least some cases.
+- Realistic staged path:
+  - Stage 1 (possible with the re-export): learn the SA eddy viscosity (or nu-tilde) as a cell-local function of non-dimensional, Galilean- and rotation-invariant flow features: wall-distance Reynolds number, strain/rotation magnitude ratio (Q-criterion based), normalized streamwise pressure gradient, viscosity ratio, and so on. Test whether a cell-local model trained on some geometries reproduces SA's nu_t on held-out geometries. This tests "cell-local, geometry-independent" learning cheaply and reuses the invariance work (non-dimensional inputs, no cell size, no absolute position).
+  - Stage 2 (needs higher-fidelity data): field inversion + machine learning: infer a correction field to SA that matches high-fidelity data, then learn that correction from local invariant features. Alternatively, predict Reynolds-stress anisotropy using an invariant tensor basis (tensor-basis neural network).
+  - Stage 3: embed the learned closure in a solver and check a posteriori consistency. Models that look good on frozen (a priori) data can make the RANS system ill-conditioned or unstable.
+- Generalization levers: strictly local, non-dimensional, invariant inputs; realizability constraints on Reynolds stresses; training across diverse flows (attached, separated, wake); explicit out-of-distribution detection on input features. The x/L extrapolation failure in this log is a concrete example of why input-distribution checks matter.
+- This is a separate problem from the field surrogate. The surrogate predicts the converged CFD field directly; a closure model is used inside a solver. They can share features and data, and Stage 1 can be trained alongside the conservation work.
+
+### 3. Multi-scale networks, attention and physics losses
+
+- Transolver slices already act as a learned coarse scale (soft clustering into physical states). Multi-scale options to test after steps 1-3: (a) hierarchical slices (coarse and fine slice counts in different layers); (b) a local operator next to global slice attention (plan step 5); (c) a mesh-coarsening U-Net-style hierarchy (multi-scale message passing). Prefer (a)/(b) first because they keep the Transolver code base small.
+- Physics losses on neural operators: physics-informed operator training (data + PDE residual) is the natural fit for plan section 1. Pointwise-autodiff PINN residuals are a poor fit for cell-averaged unstructured data.
+- Paper list: the user referenced a list of papers under these headings, but it was not included in the message. Reading list from memory, to be verified before citing in `paper/main.tex`:
+  - Multi-scale / attention / operators: Wu et al. 2024 (Transolver, ICML); Pfaff et al. 2021 (MeshGraphNets, ICLR); Fortunato et al. 2022 (MultiScale MeshGraphNets); Li et al. 2021 (Fourier Neural Operator, ICLR); Li et al. Geo-FNO (operators on general geometries).
+  - Physics losses: Raissi, Perdikaris and Karniadakis 2019 (PINNs, JCP); Li et al. physics-informed neural operator (PINO); Wang, Teng and Perdikaris 2021 (gradient pathologies in PINNs, SIAM J. Sci. Comput.); Krishnapriyan et al. 2021 (PINN failure modes, NeurIPS).
+  - Turbulence closures: Pope 1975 (general effective-viscosity hypothesis / tensor basis, JFM); Ling, Kurzawski and Templeton 2016 (tensor-basis neural network, JFM); Parish and Duraisamy 2016 (field inversion and machine learning, JCP); Weatheritt and Sandberg 2016 (gene-expression programming for algebraic stress models, JCP); Wu, Xiao and Paterson 2018 (physics-informed ML for RANS, Phys. Rev. Fluids); Wu et al. 2019 (ill-conditioning of RANS with data-driven Reynolds stress, JFM); Duraisamy, Iaccarino and Xiao 2019 (Turbulence modeling in the age of data, Annu. Rev. Fluid Mech.); Duraisamy 2021 (perspectives on ML-augmented RANS/LES, Phys. Rev. Fluids).
+
+### Updated roadmap (one step at a time, same split, images each step)
+
+1. Transolver + two-scale inputs.
+2. Area-weighted slicing.
+3. Learning-rate schedule fix.
+4. Seeds, then capacity and near-wall band.
+5. Optional local + global hybrid / hierarchical slices.
+6. Conservation losses (after the STAR-CCM+ re-export): truth-residual baseline, multi-field outputs, continuity then momentum.
+7. Closure track Stage 1: cell-local learned SA eddy viscosity on invariant features, tested across held-out geometries. Stages 2-3 only with higher-fidelity data.
+
+## 2026-11-22 - Public Benchmarks, Head-to-Head Table and Paper-Update Rule
+
+### Why public benchmarks
+
+- Results on our 30 private STAR-CCM+ designs cannot be verified by reviewers against established baselines; on their own they read as an engineering case study. Final claims must be made on standardized community benchmarks, with each benchmark's official splits and metrics, alongside published state-of-the-art numbers.
+- Candidate benchmarks (details from memory; confirm data format, splits, metrics and licences before use):
+  - **AirfRANS** (Bonnet et al., NeurIPS 2022 Datasets): 2D incompressible RANS around airfoils with Spalart-Allmaras, volume fields (u, v, p, nu_t) and standardized splits. Closest match to our current 2D SA RANS volume setup, including the conservation and closure tracks; Transolver reports results on it. Recommended first public benchmark.
+  - **DrivAerNet / DrivAerNet++**: realistic 3D car geometries with CFD fields and drag coefficients; standard for automotive aerodynamic ML.
+  - **3D Ahmed body**: classic automotive bluff-body benchmark for wake and separation.
+  - **ShapeNet Car** (Umetani and Bickel 2018 dataset as used by GNOT and Transolver): 3D surface pressure and velocity around car shapes; Transolver reports results on it.
+  - **Darcy flow** (FNO benchmark): structured-grid PDE benchmark, not aerodynamic; useful only as a sanity check that our Transolver implementation reproduces published operator-learning numbers.
+- Prerequisites: a real 3D volume/surface loader (deferred so far) and GPU training; DrivAerNet and Ahmed meshes are far larger than our 2D designs. CPU-only training will not scale.
+- Metrics caveat: public benchmarks usually report normalized metrics (relative L2, MSE on normalized fields, drag-coefficient error, R2), not pressure in Pa. Report each benchmark in its own official metric; keep Pa only for our private dataset.
+- Head-to-head protocol: use published numbers only when the protocol (split, preprocessing, metric) is identical; otherwise rerun the baseline under our protocol and say so. Baselines to include (as published for each benchmark): Transolver (and Transolver++ where available), GNOT, MeshGraphNets, Geo-FNO/FNO, PointNet / RegDGCNN (DrivAerNet baselines), GINO.
+
+### Running comparison table (private dataset, stratified fold-2 split)
+
+Reference row: the current Transolver implementation (`benchmarks/transolver`). Every new addition from the roadmap is trained on the same split and appended as a new row; never overwrite earlier rows.
+
+| Model | Whole-domain pressure RMSE (Pa) | Near-wall RMSE, 0.05 m (Pa) | CD error (%) | Memory (GB) | Inference time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Transolver, geometry inputs (benchmark) | 1.387 | 2.774 | n/m | n/m | n/m |
+| Transolver, geometry inputs (GPU rerun) | 1.110 | 2.025 | n/m | n/m | n/m |
+| Two-scale latent-attention GNN (reference) | 2.374 | 8.223 | n/m | n/m | n/m |
+| Non-invariant latent-attention GNN (reference) | 3.316 | 10.868 | n/m | n/m | n/m |
+
+- n/m = not measured yet. Measurement rules for future rows: CD error from predicted pressure integrated over the body against the logged `Cd`; until wall shear is exported this is pressure drag only and must be labelled as such. Memory = peak training memory per design (state CPU RSS or GPU peak allocated). Inference time = mean forward time per design after warm-up, with hardware and thread count recorded. Backfill these three columns for existing rows before claiming any efficiency advantage.
+
+### 2026-11-22 - Transolver GPU rerun
+
+- Repeated the geometry-input Transolver on the same stratified fold and seed using the NVIDIA RTX PRO 4000 Blackwell laptop GPU. Training stopped at epoch 680, with the best validation checkpoint at epoch 600. The previous CPU run stopped at epoch 330, with its best checkpoint at epoch 250.
+- Across six previously inspected held-out designs, mean RMSE was 1.110 Pa and near-wall RMSE was 2.025 Pa, versus 1.387 Pa and 2.774 Pa for the CPU reference. Training took 124.2 s for 680 epochs (0.183 s/epoch), versus 823.3 s for 330 epochs (2.495 s/epoch) in the earlier CPU run. These are single runs with different stopping points, PyTorch builds and execution devices, not a controlled accuracy or performance benchmark.
+- Common-scale actual CFD, CPU reference and GPU predictions: [Design_1](volume_results/gpu_transolver_full_20261122/Design_1_benchmark_comparison.png) and [Design_14](volume_results/gpu_transolver_full_20261122/Design_14_benchmark_comparison.png). The remaining held-out comparisons and checkpoint are in `volume_results/gpu_transolver_full_20261122/`.
+
+### Paper-update rule
+
+- After every completed experiment, update `paper/main.tex` in the same session, even roughly: add the new row to the head-to-head table, one or two sentences of interpretation, and the image reference. The narrative (from GNN baseline to invariance failure, to two-scale fix, to Transolver as the main line, to conservation and public benchmarks) matters more than polish; polishing comes later.
