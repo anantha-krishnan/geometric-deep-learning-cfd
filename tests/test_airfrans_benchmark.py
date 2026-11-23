@@ -6,12 +6,23 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from benchmarks.airfrans.data import build_features, fit_normalization, normalize_case
+from benchmarks.airfrans.data import (
+    build_features,
+    build_mesh_edge_index,
+    fit_normalization,
+    induced_subgraph,
+    normalize_case,
+)
 from benchmarks.airfrans.evaluate import summarize
 from benchmarks.airfrans.evaluation import predict_full, pressure_scores
 from benchmarks.airfrans.slice_dataset import create_reduced_dataset
 from benchmarks.airfrans.splits import build_reduced_splits, parse_case
-from benchmarks.airfrans.training import physics_loss, positional_features
+from benchmarks.airfrans.train import sample_case
+from benchmarks.airfrans.training import (
+    BenchmarkModel,
+    physics_loss,
+    positional_features,
+)
 
 
 def make_case(index):
@@ -96,6 +107,33 @@ class AirfransSubsetTests(unittest.TestCase):
 
 
 class AirfransDataTests(unittest.TestCase):
+    def test_mesh_edges_connect_cell_perimeters_in_both_directions(self):
+        edge_index = build_mesh_edge_index(np.array([3, 0, 1, 2, 4, 2, 3, 4, 5]))
+        actual = set(map(tuple, edge_index.T.tolist()))
+        expected = {
+            (0, 1),
+            (1, 0),
+            (1, 2),
+            (2, 1),
+            (2, 0),
+            (0, 2),
+            (2, 3),
+            (3, 2),
+            (3, 4),
+            (4, 3),
+            (4, 5),
+            (5, 4),
+            (5, 2),
+            (2, 5),
+        }
+        self.assertEqual(actual, expected)
+
+    def test_induced_subgraph_remaps_only_edges_between_sampled_nodes(self):
+        edge_index = torch.tensor([[0, 1, 1, 2, 2, 3], [1, 0, 2, 1, 3, 2]])
+        sampled = induced_subgraph(edge_index, np.array([3, 1, 2]), num_nodes=4)
+        actual = set(map(tuple, sampled.T.tolist()))
+        self.assertEqual(actual, {(1, 2), (2, 1), (2, 0), (0, 2)})
+
     def test_features_match_surface_coordinates_and_reference_signs(self):
         points = np.array([[0, 0], [1, 0], [0.5, 1]], dtype=float)
         velocity = np.array([[0, 0], [0, 0], [2, 1]], dtype=float)
@@ -129,6 +167,46 @@ class AirfransDataTests(unittest.TestCase):
 
 
 class AirfransTrainingTests(unittest.TestCase):
+    def test_sample_case_returns_induced_mesh_edges_for_gnn(self):
+        edge_index = torch.tensor(
+            [[0, 1, 0, 2, 0, 3, 1, 2, 1, 3, 2, 3], [1, 0, 2, 0, 3, 0, 2, 1, 3, 1, 3, 2]]
+        )
+        case = {
+            "name": "case",
+            "x": np.zeros((4, 7), dtype=np.float32),
+            "pos": np.zeros((4, 2), dtype=np.float32),
+            "y": np.zeros((4, 4), dtype=np.float32),
+            "surface": np.array([True, True, False, False]),
+            "edge_index": edge_index,
+        }
+        sample = sample_case(
+            case, 2, np.random.default_rng(1), torch.device("cpu"), include_edges=True
+        )
+        self.assertEqual(len(sample), 5)
+        self.assertEqual(tuple(sample[4].shape), (2, 2))
+        self.assertLess(int(sample[4].max()), 2)
+
+    def test_latent_attention_gnn_maps_airfrans_features_to_four_fields(self):
+        model = BenchmarkModel("gnn")
+        inputs = torch.randn(6, 7)
+        positions = torch.randn(6, 2)
+        edge_index = torch.tensor(
+            [[0, 1, 1, 2, 2, 3, 3, 4, 4, 5], [1, 0, 2, 1, 3, 2, 4, 3, 5, 4]]
+        )
+        predictions = model(inputs, positions, edge_index)
+        self.assertEqual(tuple(predictions.shape), (6, 4))
+        self.assertEqual(model.model.attention_tokens, 32)
+        self.assertTrue(
+            any(key.startswith("layers.2.") for key in model.model.state_dict())
+        )
+        loss = physics_loss(
+            predictions,
+            torch.zeros_like(predictions),
+            torch.tensor([True, False, False, False, False, False]),
+        )
+        loss.backward()
+        self.assertIsNotNone(model.model.encoder[0].weight.grad)
+
     def test_reference_position_features(self):
         distances = positional_features(torch.tensor([[-2.0, -1.5], [4.0, 1.5]]))
         self.assertEqual(tuple(distances.shape), (2, 64))
@@ -166,6 +244,30 @@ class AirfransEvaluationTests(unittest.TestCase):
         np.testing.assert_array_equal(predictions[0], [0, 0, 1, 0])
         np.testing.assert_array_equal(predictions[1:], np.ones((9, 4)))
         self.assertGreaterEqual(rounds, 3)
+
+    def test_gnn_inference_passes_induced_edges_to_the_model(self):
+        class DummyGraphModel(torch.nn.Module):
+            kind = "gnn"
+
+            def forward(self, inputs, positions, edge_index):
+                assert edge_index.shape[0] == 2
+                assert edge_index.numel() > 0
+                return torch.ones((len(inputs), 4), device=inputs.device)
+
+        case = {
+            "x": np.zeros((6, 7)),
+            "pos": np.zeros((6, 2)),
+            "surface": np.array([True] + [False] * 5),
+            "edge_index": torch.tensor(
+                [[0, 1, 1, 2, 2, 3, 3, 4, 4, 5], [1, 0, 2, 1, 3, 2, 4, 3, 5, 4]]
+            ),
+        }
+        statistics = {"y_mean": np.zeros(4), "y_std": np.ones(4)}
+        predictions, rounds = predict_full(
+            DummyGraphModel(), case, statistics, 4, 42, "cpu"
+        )
+        self.assertEqual(predictions.shape, (6, 4))
+        self.assertGreaterEqual(rounds, 2)
 
     def test_summary_serializes_undefined_rank_correlation_as_null(self):
         summary = summarize(

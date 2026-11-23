@@ -82,6 +82,51 @@ If Internet is disabled, attach the Transolver repository as a third Kaggle Data
 
 The output directory must be new. The script saves the latest completed epoch but does not yet implement optimizer-state resume. Download or save `/kaggle/working/airfrans_run` as notebook output after the run.
 
+## Run the latent-attention GNN
+
+The repository's `latentattention32` GNN uses the same 96/16/40 case split. It builds directed mesh edges from each internal VTU, trains on induced 32,000-node subgraphs, and predicts all four AirfRANS fields. This model does not need the upstream Transolver checkout. Install the requirements first, then use:
+
+```python
+from pathlib import Path
+import os
+import subprocess
+import sys
+
+CODE_ROOT = Path("/kaggle/input/datasets/ananthakrishnan86/gdl-codebase")
+DATA_ROOT = Path("/kaggle/input/datasets/salitlokhande8/airfrans-dataset-zip/Dataset")
+SPLITS_PATH = CODE_ROOT / "benchmarks/airfrans/kaggle_splits_96_16_40.json"
+RUN_ROOT = Path("/kaggle/working/airfrans_gnn_latentattention32_30epoch")
+
+env = os.environ.copy()
+env["PYTHONPATH"] = str(CODE_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+
+subprocess.run(
+    [
+        sys.executable, "-m", "benchmarks.airfrans.train",
+        "--data", str(DATA_ROOT),
+        "--splits", str(SPLITS_PATH),
+        "--output", str(RUN_ROOT),
+        "--models", "gnn",
+        "--epochs", "30",
+        "--points", "32000",
+        "--validation-interval", "5",
+        "--seed", "2026",
+    ],
+    check=True,
+    env=env,
+)
+subprocess.run(
+    [
+        sys.executable, "-m", "benchmarks.airfrans.evaluate",
+        "--data", str(DATA_ROOT),
+        "--splits", str(SPLITS_PATH),
+        "--run-dir", str(RUN_ROOT),
+    ],
+    check=True,
+    env=env,
+)
+```
+
 ## Outputs and interpretation
 
 - `airfrans_run/reference.pt`: latest completed checkpoint, training history, seed, point count and peak GPU memory.

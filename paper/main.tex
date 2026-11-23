@@ -1090,7 +1090,8 @@ compare with STAR-CCM+ reports; consider pressure-drop prediction.
 \item \textbf{Public benchmarks.} Final claims require standardised community
 benchmarks with official splits and metrics and published baselines: AirfRANS
 (2D RANS, closest to this study), DrivAerNet/DrivAerNet++, the 3D Ahmed body
-and ShapeNet Car. This requires a 3D loader and GPU training.
+and ShapeNet Car. A laptop-GPU reduced AirfRANS run is now feasible; full-data
+and repeated-seed validation remain outstanding.
 \item \textbf{Conservation.} Re-export velocity, eddy viscosity and the
 Spalart--Allmaras variable from STAR-CCM+; add finite-volume continuity and
 momentum residuals, measured relative to the residual of the CFD truth under
@@ -1099,6 +1100,14 @@ our discrete operator.
 of eddy viscosity across geometries; improving on the closure itself needs
 higher-fidelity (LES/DNS) data.
 \end{enumerate}
+An initial reference-Transolver run used 96 training, 16 validation and 40 held-out
+AirfRANS cases for 398 epochs. Mean normalized pressure MSE was 0.0850 in the
+volume and 0.6920 at the surface; lift Spearman correlation was 0.9413. One
+14.684-degree test case dominated the surface-pressure mean (MSE 23.08), while
+the median was 0.0222. This reduced-data result is substantially worse than the
+published values and is not paper parity: only 96 cases received gradient updates,
+compared with 720 in the authors' setup. The shared-scale outlier comparison is
+at \path{volume_results/airfrans_reduced_20261122/laptop_reference_398epoch/evaluation/worst_surface_case.png}.
 No checkpoint is to be promoted to production before step~1.
 
 % =============================================================================

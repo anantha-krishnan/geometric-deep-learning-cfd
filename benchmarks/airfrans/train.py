@@ -1,4 +1,4 @@
-"""Train a Transolver implementation on a reduced AirfRANS split."""
+"""Train Transolver or the latent-attention GNN on a reduced AirfRANS split."""
 
 import argparse
 import json
@@ -9,7 +9,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from benchmarks.airfrans.data import fit_normalization, load_case, normalize_case
+from benchmarks.airfrans.data import (
+    fit_normalization,
+    induced_subgraph,
+    load_case,
+    normalize_case,
+)
 from benchmarks.airfrans.training import BenchmarkModel, physics_loss
 
 
@@ -29,15 +34,22 @@ def load_training_data(root, splits):
     return training, validation, statistics
 
 
-def sample_case(case, size, rng, device):
+def sample_case(case, size, rng, device, include_edges=False):
     if len(case["x"]) < size:
         raise ValueError(f"{case['name']} has fewer than {size} nodes.")
     indices = rng.choice(len(case["x"]), size, replace=False)
+    edge_index = None
+    if include_edges:
+        if "edge_index" not in case:
+            raise ValueError(f"{case['name']} has no mesh edge index.")
+        edge_index = induced_subgraph(case["edge_index"], indices, len(case["x"]))
+        edge_index = edge_index.to(device)
     return (
         torch.as_tensor(case["x"][indices], device=device),
         torch.as_tensor(case["pos"][indices], device=device),
         torch.as_tensor(case["y"][indices], device=device),
         torch.as_tensor(case["surface"][indices], device=device),
+        edge_index,
     )
 
 
@@ -47,11 +59,13 @@ def validation_loss(model, cases, sample_size, seed, device):
     losses = []
     with torch.no_grad():
         for case in cases:
-            inputs, positions, targets, surface = sample_case(
-                case, sample_size, rng, device
+            inputs, positions, targets, surface, edge_index = sample_case(
+                case, sample_size, rng, device, include_edges=model.kind == "gnn"
             )
             losses.append(
-                physics_loss(model(inputs, positions), targets, surface).item()
+                physics_loss(
+                    model(inputs, positions, edge_index), targets, surface
+                ).item()
             )
     return float(np.mean(losses))
 
@@ -73,11 +87,15 @@ def train_model(kind, training, validation, statistics, args, device, output):
         model.train()
         losses = []
         for index in rng.permutation(len(training)):
-            inputs, positions, targets, surface = sample_case(
-                training[index], args.points, rng, device
+            inputs, positions, targets, surface, edge_index = sample_case(
+                training[index],
+                args.points,
+                rng,
+                device,
+                include_edges=model.kind == "gnn",
             )
             optimizer.zero_grad(set_to_none=True)
-            loss = physics_loss(model(inputs, positions), targets, surface)
+            loss = physics_loss(model(inputs, positions, edge_index), targets, surface)
             if not torch.isfinite(loss):
                 raise ValueError(f"Non-finite {kind} loss at epoch {epoch + 1}.")
             loss.backward()
@@ -131,9 +149,9 @@ def main():
     parser.add_argument(
         "--models",
         nargs="+",
-        choices=("reference", "local"),
+        choices=("reference", "local", "gnn"),
         default=["reference"],
-        help="Implementation(s) to train; defaults to paper reference.",
+        help="Implementation(s) to train; defaults to the paper reference.",
     )
     args = parser.parse_args()
     if min(args.epochs, args.points, args.validation_interval) <= 0:

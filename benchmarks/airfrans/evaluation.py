@@ -3,6 +3,8 @@
 import numpy as np
 import torch
 
+from benchmarks.airfrans.data import induced_subgraph
+
 
 def pressure_scores(predictions, targets, surface):
     error = np.square(predictions[:, 2] - targets[:, 2])
@@ -24,7 +26,12 @@ def predict_full(model, case, statistics, sample_size, seed, device):
         indices = rng.choice(count, min(sample_size, count), replace=False)
         inputs = torch.as_tensor(case["x"][indices], device=device)
         positions = torch.as_tensor(case["pos"][indices], device=device)
-        total[indices] += model(inputs, positions).cpu().numpy()
+        if getattr(model, "kind", None) == "gnn":
+            edge_index = induced_subgraph(case["edge_index"], indices, count).to(device)
+            prediction = model(inputs, positions, edge_index)
+        else:
+            prediction = model(inputs, positions)
+        total[indices] += prediction.cpu().numpy()
         visits[indices] += 1
         rounds += 1
     predictions = (total / visits[:, None]).astype(np.float32)

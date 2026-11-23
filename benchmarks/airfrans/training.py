@@ -1,4 +1,4 @@
-"""Shared reduced AirfRANS training protocol for both Transolver models."""
+"""Shared reduced AirfRANS protocol for Transolver and latent-attention GNN models."""
 
 import importlib.util
 from pathlib import Path
@@ -49,6 +49,20 @@ class BenchmarkModel(nn.Module):
                 num_heads=8,
                 mlp_ratio=2,
             )
+        elif kind == "gnn":
+            from model import Milestone1_GNN
+
+            self.model = Milestone1_GNN(
+                geom_dim=7,
+                design_dim=0,
+                hidden_dim=32,
+                num_layers=3,
+                out_dim=4,
+                edge_dim=0,
+                use_global=True,
+                attention_tokens=32,
+                attention_heads=4,
+            )
         elif kind == "reference":
             if reference_path is None:
                 raise ValueError("The authors' Transolver repository path is required.")
@@ -79,8 +93,14 @@ class BenchmarkModel(nn.Module):
         else:
             raise ValueError(f"Unknown model kind: {kind}")
 
-    def forward(self, inputs, positions):
+    def forward(self, inputs, positions, edge_index=None):
         if self.kind == "reference":
             return self.model(SimpleNamespace(x=inputs, pos=positions))
+        if self.kind == "gnn":
+            if edge_index is None:
+                raise ValueError("The AirfRANS GNN requires mesh edge indices.")
+            params = inputs.new_empty((len(inputs), 0))
+            batch_idx = torch.zeros(len(inputs), dtype=torch.long, device=inputs.device)
+            return self.model(inputs, params, edge_index, batch_idx=batch_idx)
         inputs = torch.cat((inputs, positional_features(positions)), dim=1)
         return self.model(inputs, inputs.new_empty((len(inputs), 0)))

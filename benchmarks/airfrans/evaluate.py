@@ -45,7 +45,12 @@ def plot_case(case, predictions, path):
     )
     indices = np.flatnonzero(near)[:: max(1, int(near.sum()) // 25000)]
     actual = case["y"][:, 2]
-    labels = ["CFD", *[f"{kind.title()} Transolver" for kind in predictions]]
+    model_names = {
+        "reference": "Reference Transolver",
+        "local": "Local Transolver",
+        "gnn": "Latent-attention GNN",
+    }
+    labels = ["CFD", *[model_names.get(kind, kind.title()) for kind in predictions]]
     fields = [actual, *[values[:, 2] for values in predictions.values()]]
     errors = [np.abs(values[:, 2] - actual) for values in predictions.values()]
     low, high = np.quantile(actual[indices], [0.01, 0.99])
@@ -74,7 +79,12 @@ def plot_case(case, predictions, path):
     )
     axes[1, 0].axis("off")
     for axis, values, title in zip(
-        axes[1, 1:], errors, [f"{kind.title()} absolute error" for kind in predictions]
+        axes[1, 1:],
+        errors,
+        [
+            f"{model_names.get(kind, kind.title())} absolute error"
+            for kind in predictions
+        ],
     ):
         error_image = axis.scatter(
             points[indices, 0],

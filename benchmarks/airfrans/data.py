@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pyvista as pv
+import torch
 
 from benchmarks.airfrans.splits import parse_case
 
@@ -59,7 +60,7 @@ def load_case(root, name):
     folder = Path(root) / name
     internal = pv.read(folder / f"{name}_internal.vtu")
     airfoil = pv.read(folder / f"{name}_aerofoil.vtp")
-    return build_features(
+    case = build_features(
         name,
         internal.points,
         internal.point_data["U"],
@@ -69,6 +70,40 @@ def load_case(root, name):
         airfoil.points,
         airfoil.point_data["Normals"],
     )
+    case["edge_index"] = build_mesh_edge_index(internal.cells)
+    return case
+
+
+def build_mesh_edge_index(packed_cells):
+    """Build symmetric perimeter edges from VTK's packed cell connectivity."""
+    cells = np.asarray(packed_cells, dtype=np.int64)
+    edge_parts = []
+    offset = 0
+    while offset < len(cells):
+        point_count = int(cells[offset])
+        end = offset + point_count + 1
+        if point_count < 2 or end > len(cells):
+            raise ValueError("Invalid packed VTK cell connectivity.")
+        points = cells[offset + 1 : end]
+        edge_parts.append(np.column_stack((points, np.roll(points, -1))))
+        offset = end
+    if not edge_parts:
+        raise ValueError("The mesh contains no cells from which to build edges.")
+    edges = np.concatenate(edge_parts)
+    edges = np.concatenate((edges, edges[:, ::-1]), axis=0)
+    edges = np.unique(edges, axis=0)
+    return torch.as_tensor(edges.T.copy(), dtype=torch.long)
+
+
+def induced_subgraph(edge_index, node_indices, num_nodes):
+    """Select and remap mesh edges whose endpoints are both sampled nodes."""
+    sampled = np.asarray(node_indices, dtype=np.int64)
+    mapping = np.full(num_nodes, -1, dtype=np.int64)
+    mapping[sampled] = np.arange(len(sampled))
+    edges = edge_index.detach().cpu().numpy()
+    remapped = mapping[edges]
+    keep = (remapped >= 0).all(axis=0)
+    return torch.as_tensor(remapped[:, keep].copy(), dtype=torch.long)
 
 
 def fit_normalization(cases):
