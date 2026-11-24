@@ -21,7 +21,12 @@ VARIANTS = ("baseline", "coefficient", "geometry")
 
 
 def build_cell_polygons(coords, cell_edges):
-    polygons = []
+    return [coords[loop, :2] for loop in cell_vertex_loops(cell_edges)]
+
+
+def cell_vertex_loops(cell_edges):
+    """Ordered vertex indices of each cell's closed 2D face loop."""
+    loops = []
     for cell, edges in enumerate(cell_edges):
         neighbors = {}
         for start, end in edges:
@@ -46,8 +51,8 @@ def build_cell_polygons(coords, cell_edges):
             previous, current = current, following
         if len(ordered) != len(neighbors):
             raise ValueError(f"Cell {cell} has disconnected polygon loops.")
-        polygons.append(coords[ordered, :2])
-    return polygons
+        loops.append(ordered)
+    return loops
 
 
 def read_mesh(path):

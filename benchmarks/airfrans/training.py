@@ -32,9 +32,21 @@ def physics_loss(predictions, targets, surface):
     return squared_error[surface].mean() + squared_error[~surface].mean()
 
 
-# Latent-attention GNN kinds: (area-weighted read heads, area-weighted aggregation).
-GNN_KINDS = {"gnn": (0, False), "gnn_area_read": (2, False), "gnn_area": (2, True)}
+# Latent-attention GNN kinds: (neighbour aggregation, relative-distance edge features).
+GNN_KINDS = {
+    "gnn": ("sum", False),
+    "gnn_mean": ("mean", False),
+    "gnn_rel": ("sum", True),
+    "gnn_mean_rel": ("mean", True),
+}
 MODEL_KINDS = ("reference", "local", *GNN_KINDS)
+
+
+def relative_edge_features(positions, edge_index):
+    """[unit direction, log(distance / chord)]; AirfRANS coordinates are in chords."""
+    displacement = positions[edge_index[1]] - positions[edge_index[0]]
+    distance = displacement.norm(dim=1, keepdim=True).clamp_min(1e-12)
+    return torch.cat([displacement / distance, distance.log()], dim=1)
 
 
 class BenchmarkModel(nn.Module):
@@ -42,7 +54,7 @@ class BenchmarkModel(nn.Module):
         super().__init__()
         self.kind = kind
         self.uses_graph = kind in GNN_KINDS
-        self.uses_areas = self.uses_graph and GNN_KINDS[kind] != (0, False)
+        self.relative_edges = self.uses_graph and GNN_KINDS[kind][1]
         if kind == "local":
             from benchmarks.transolver.model import Transolver
 
@@ -59,19 +71,18 @@ class BenchmarkModel(nn.Module):
         elif kind in GNN_KINDS:
             from model import Milestone1_GNN
 
-            area_heads, area_aggregation = GNN_KINDS[kind]
+            aggregation, relative_edges = GNN_KINDS[kind]
             self.model = Milestone1_GNN(
                 geom_dim=7,
                 design_dim=0,
                 hidden_dim=32,
                 num_layers=3,
                 out_dim=4,
-                edge_dim=0,
+                edge_dim=3 if relative_edges else 0,
                 use_global=True,
                 attention_tokens=32,
                 attention_heads=4,
-                area_heads=area_heads,
-                area_aggregation=area_aggregation,
+                aggregation=aggregation,
             )
         elif kind == "reference":
             if reference_path is None:
@@ -103,7 +114,7 @@ class BenchmarkModel(nn.Module):
         else:
             raise ValueError(f"Unknown model kind: {kind}")
 
-    def forward(self, inputs, positions, edge_index=None, areas=None):
+    def forward(self, inputs, positions, edge_index=None):
         if self.kind == "reference":
             return self.model(SimpleNamespace(x=inputs, pos=positions))
         if self.uses_graph:
@@ -111,8 +122,11 @@ class BenchmarkModel(nn.Module):
                 raise ValueError("The AirfRANS GNN requires mesh edge indices.")
             params = inputs.new_empty((len(inputs), 0))
             batch_idx = torch.zeros(len(inputs), dtype=torch.long, device=inputs.device)
-            return self.model(
-                inputs, params, edge_index, batch_idx=batch_idx, areas=areas
+            edge_attr = (
+                relative_edge_features(positions, edge_index)
+                if self.relative_edges
+                else None
             )
+            return self.model(inputs, params, edge_index, edge_attr, batch_idx)
         inputs = torch.cat((inputs, positional_features(positions)), dim=1)
         return self.model(inputs, inputs.new_empty((len(inputs), 0)))

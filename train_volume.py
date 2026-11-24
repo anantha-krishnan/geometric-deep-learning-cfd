@@ -18,6 +18,7 @@ from dataset import (
 )
 from invariance import (
     NEAR_WALL_RELATIVE,
+    continuous_inputs,
     feature_names,
     make_invariant,
     reference_length,
@@ -39,7 +40,14 @@ SEED = 0
 DENSITY = 1.18415
 REFERENCE_PRESSURE = 0.0
 NEAR_WALL_THRESHOLD = 0.05
-VARIANTS = ("baseline", "coefficient", "geometry", "invariant", "two_scale")
+VARIANTS = (
+    "baseline",
+    "coefficient",
+    "geometry",
+    "invariant",
+    "two_scale",
+    "continuous",
+)
 # Position frame of each invariant variant (see invariance.make_invariant).
 VARIANT_FRAMES = {"invariant": "body", "two_scale": "domain"}
 
@@ -62,6 +70,10 @@ def prepare_data(data, variant, density=DENSITY, reference_pressure=REFERENCE_PR
             item["wall_distance"] = raw["geom"][:, 4]
         if variant in VARIANT_FRAMES:
             item = make_invariant(item, VARIANT_FRAMES[variant])
+        elif variant == "continuous":
+            if "wall_distance" not in item:
+                raise ValueError("Continuous variant requires wall distance.")
+            item = continuous_inputs(item)
         elif variant != "geometry":
             item["geom"] = raw["geom"][:, :4]
             item.pop("edge_attr", None)
@@ -177,8 +189,7 @@ def create_model(
     num_layers=NUM_LAYERS,
     activation="default",
     design_dim=3,
-    area_heads=0,
-    area_aggregation=False,
+    aggregation="sum",
 ):
     return Milestone1_GNN(
         geom_dim=geom_dim,
@@ -192,8 +203,7 @@ def create_model(
         attention_heads=attention_heads,
         message_attention_heads=message_attention_heads,
         activation=activation,
-        area_heads=area_heads,
-        area_aggregation=area_aggregation,
+        aggregation=aggregation,
     ).to(device)
 
 
@@ -260,9 +270,7 @@ def train_model(
 
             optimizer.zero_grad()
             edge_attr = batch["edge_attr"].to(device) if "edge_attr" in batch else None
-            prediction = model(
-                geom, params, edge_index, edge_attr, batch_idx=batch_idx, areas=areas
-            )
+            prediction = model(geom, params, edge_index, edge_attr, batch_idx=batch_idx)
             if loss_mode == "near-body":
                 distance, threshold = near_wall_distance(batch)
                 loss = near_body_weighted_mse(
@@ -302,13 +310,7 @@ def predict_pressure(model, item, pressure_scaler, device):
     geom = item["geom_norm"].to(device)
     params = item["params_norm"].to(device).unsqueeze(0).expand(geom.size(0), -1)
     edge_attr = item["edge_attr"].to(device) if "edge_attr" in item else None
-    prediction = model(
-        geom,
-        params,
-        item["edge_index"].to(device),
-        edge_attr,
-        areas=item["geom"][:, 3].to(device),
-    )
+    prediction = model(geom, params, item["edge_index"].to(device), edge_attr)
     target = pressure_scaler.inverse_transform(prediction.cpu())
     return target * item.get("pressure_scale", 1.0) + item.get(
         "pressure_reference", 0.0
@@ -508,8 +510,7 @@ def save_checkpoint(model, scalers, path, run_config=None):
                 "attention_heads": model.attention_heads,
                 "message_attention_heads": model.message_attention_heads,
                 "activation": model.activation,
-                "area_heads": model.area_heads,
-                "area_aggregation": model.area_aggregation,
+                "aggregation": model.aggregation,
             },
             "format_version": 2,
             "run_config": run_config or {"variant": "baseline"},

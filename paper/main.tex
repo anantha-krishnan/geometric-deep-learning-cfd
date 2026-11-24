@@ -932,6 +932,8 @@ Latent GNN, 400-ep.\ anneal & 4.15 & 10.22 & n/m & n/m & n/m \\
 \quad + area read/aggr.\ (400 ep.) & 3.09 & 10.52 & n/m & n/m & n/m \\
 \quad + area read ($T_\mathrm{max}{=}1000$) & 4.93 & 12.22 & n/m & n/m & n/m \\
 \quad + area read/aggr.\ ($T_\mathrm{max}{=}1000$) & 3.21 & 10.50 & n/m & n/m & n/m \\
+Latent GNN, continuous inputs & 1.42 & 4.02 & n/m & n/m & n/m \\
+\quad + mean aggregation & 1.91 & 4.90 & n/m & n/m & n/m \\
 \bottomrule
 \end{tabular}
 \\[2pt]
@@ -980,7 +982,22 @@ The annealed baseline itself overfitted and was much worse than the unannealed
 $T_\mathrm{max}{=}1000$ run (2.41\,Pa). Under that protocol both area variants
 stopped early on noisy validation minima and were worse. Schedule and stopping
 effects (about $2\times$) exceed any area effect, so multi-seed runs are required
-before any conclusion.
+before any conclusion. Log-area weighting was subsequently removed.
+
+\textbf{Continuous inputs and a refinement test.} Removing the raw cell area
+from node inputs (nodes $[x,y,d]$) and using edges
+$[\Delta\mathbf{x}/\|\Delta\mathbf{x}\|,\log(\|\Delta\mathbf{x}\|/L_\mathrm{ref})]$
+reduced the latent GNN's mean RMSE from 2.41 to 1.42\,Pa and near-wall RMSE from
+6.84 to 4.02\,Pa, better on all six outer designs (one seed). Mean neighbour
+aggregation was worse (1.91\,Pa). To test resolution stability we split every
+held-out cell into one quadrilateral per vertex and area-averaged child
+predictions back onto parents. Predictions were \emph{not} resolution-stable:
+refined-minus-original differences were 2.1--2.7\,Pa RMSE for all models,
+comparable to their errors, and near-wall error roughly doubled for the
+continuous models (4.0$\to$8.2\,Pa), with upstream offsets and deepened shoulder
+suction peaks. A wall-distance control ruled out recomputed wall distances as
+the cause. Edge inputs that shift with spacing and a halved physical receptive
+field are the leading hypotheses.
 
 \textbf{Decision.} Pure message-passing GNNs are retained only as references.
 Further work improves Transolver one change at a time: two-scale inputs,
@@ -1029,14 +1046,14 @@ authors' evaluation script.
 MSE and lift scores. Lower is better except for Spearman correlation.}
 \label{tab:airfrans_mse}
 \resizebox{\columnwidth}{!}{%
-\begin{tabular}{lrr}
+\begin{tabular}{lrrr}
 \toprule
-Metric & Authors' Transolver & GNN \\
+Metric & Authors' Transolver & GNN & GNN, area \\
 \midrule
-Volume pressure MSE & 0.0850 & \textbf{0.0561} \\
-Surface pressure MSE & 0.6920 & \textbf{0.1448} \\
-Mean relative lift error & 1.6751 & \textbf{0.8546} \\
-Lift Spearman correlation & 0.9413 & \textbf{0.9465} \\
+Volume pressure MSE & 0.0850 & 0.0561 & \textbf{0.0543} \\
+Surface pressure MSE & 0.6920 & 0.1448 & \textbf{0.0608} \\
+Mean relative lift error & 1.6751 & 0.8546 & \textbf{0.6458} \\
+Lift Spearman correlation & 0.9413 & \textbf{0.9465} & 0.8921 \\
 \bottomrule
 \end{tabular}
 }
@@ -1053,6 +1070,21 @@ values; the median is 0.2443 for Transolver and 0.1238 for the GNN. The
 high-angle case illustrates that pressure and lift need not improve together:
 its relative lift errors are 0.0086 and 0.3694, respectively. The small
 Spearman difference should not be treated as conclusive from one seed.
+
+\textbf{Area-weighted GNN (exploratory).} The ``GNN, area'' column uses two
+area-weighted read heads plus area-weighted neighbour aggregation and graph mean
+(lumped nodal areas), otherwise identical to the GNN run. Its better means are
+driven by a few hard cases, chiefly the $14.684^\circ$ case (surface MSE
+$3.41\to0.87$), where the count-weighted GNN shows a broad suction-side offset
+that the area-weighted model removes. Per case it is not better: it improves
+volume MSE on 20/40 and surface MSE on 15/40 cases, medians worsen
+($0.0099\to0.0126$ volume, $0.0064\to0.0134$ surface), the geometric-mean
+surface-MSE ratio is 1.20, and no paired difference is significant (Wilcoxon
+$p\ge0.25$). One seed; no claim of improvement. An area-weighted read alone
+(aggregation and graph mean unchanged) was clearly worse than the plain GNN:
+volume and surface MSE 0.0774 and 0.8420, better on only 14/40 and 7/40 cases
+(Wilcoxon $p<10^{-3}$). The outlier gain is therefore not due to the
+area-weighted read itself.
 
 \begin{table}[t]
 \centering

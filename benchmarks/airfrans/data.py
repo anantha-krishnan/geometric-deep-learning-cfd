@@ -71,41 +71,7 @@ def load_case(root, name):
         airfoil.point_data["Normals"],
     )
     case["edge_index"] = build_mesh_edge_index(internal.cells)
-    case["areas"] = vertex_dual_areas(case["pos"], internal.cells)
     return case
-
-
-def _packed_cell_groups(packed_cells):
-    """Split VTK packed connectivity into ``{vertex_count: [cells, vertices]}`` arrays."""
-    cells = np.asarray(packed_cells, dtype=np.int64)
-    starts, offset = [], 0
-    while offset < len(cells):
-        count = int(cells[offset])
-        if count < 2 or offset + count + 1 > len(cells):
-            raise ValueError("Invalid packed VTK cell connectivity.")
-        starts.append(offset)
-        offset += count + 1
-    starts = np.asarray(starts, dtype=np.int64)
-    counts = cells[starts]
-    return {
-        int(count): cells[starts[counts == count, None] + 1 + np.arange(count)[None, :]]
-        for count in np.unique(counts)
-    }
-
-
-def vertex_dual_areas(points, packed_cells):
-    """Lumped nodal areas: each polygon's area shared equally among its vertices."""
-    points = np.asarray(points, dtype=np.float64)[:, :2]
-    areas = np.zeros(len(points), dtype=np.float64)
-    for count, vertices in _packed_cell_groups(packed_cells).items():
-        x, y = points[vertices, 0], points[vertices, 1]
-        polygon = 0.5 * np.abs(
-            (x * np.roll(y, -1, axis=1) - y * np.roll(x, -1, axis=1)).sum(axis=1)
-        )
-        np.add.at(areas, vertices.reshape(-1), np.repeat(polygon / count, count))
-    if not np.isfinite(areas).all() or not (areas > 0).any():
-        raise ValueError("Mesh cells do not define positive nodal areas.")
-    return areas.astype(np.float32)
 
 
 def build_mesh_edge_index(packed_cells):

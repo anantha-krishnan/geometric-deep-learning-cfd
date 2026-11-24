@@ -204,20 +204,15 @@ class VolumeExperimentTests(unittest.TestCase):
                         experiment.forward_item(restored, item, torch.device("cpu")),
                     )
 
-    def test_area_variants_match_latent_attention_parameter_count(self):
+    def test_mean_variant_matches_latent_attention_parameter_count(self):
         by_name = {
             choice["name"]: choice for choice in experiment.architecture_choices()
         }
-        latent = by_name["latent_attention32"]
-        for name, aggregation in (
-            ("latent_attention32_area_read", False),
-            ("latent_attention32_area", True),
-        ):
-            choice = by_name[name]
-            self.assertEqual(choice["parameter_count"], latent["parameter_count"])
-            model = experiment.create_architecture_model(choice, torch.device("cpu"))
-            self.assertEqual(model.area_heads, 2)
-            self.assertEqual(model.area_aggregation, aggregation)
+        latent, mean = by_name["latent_attention32"], by_name["latent_attention32_mean"]
+        self.assertEqual(mean["parameter_count"], latent["parameter_count"])
+        model = experiment.create_architecture_model(mean, torch.device("cpu"))
+        self.assertEqual(model.aggregation, "mean")
+        self.assertEqual(model.attention_tokens, 32)
 
     def test_ranker_exposes_tradeoffs_and_matches_metric_priorities(self):
         rows = [

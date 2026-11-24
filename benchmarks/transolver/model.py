@@ -123,9 +123,7 @@ class Transolver(nn.Module):
             h = block(h)
         return h.squeeze(0)
 
-    def forward(
-        self, geom, params, edge_index=None, edge_attr=None, batch_idx=None, areas=None
-    ):
+    def forward(self, geom, params, edge_index=None, edge_attr=None, batch_idx=None):
         h = self.encoder(torch.cat([geom, params], dim=-1)) + self.placeholder
         if batch_idx is None or int(batch_idx.max()) == 0:
             return self.decoder(self._process_graph(h))

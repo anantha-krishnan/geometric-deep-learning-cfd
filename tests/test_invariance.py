@@ -7,6 +7,7 @@ import train_volume as training
 from invariance import (
     NEAR_WALL_RELATIVE,
     bounding_box,
+    continuous_inputs,
     feature_names,
     make_invariant,
 )
@@ -81,6 +82,21 @@ def _surface_item(segments=16, scale=1.0):
 
 
 class InvarianceTests(unittest.TestCase):
+    def test_continuous_inputs_drop_cell_size_and_scale_edges_by_body_length(self):
+        coarse = continuous_inputs(_grid_item(8))
+        self.assertEqual(coarse["node_features"].shape[1], 3)
+        torch.testing.assert_close(coarse["node_features"][:, 2], coarse["geom"][:, 4])
+        torch.testing.assert_close(coarse["design_features"], coarse["params"])
+        self.assertEqual(coarse["edge_attr"].shape[1], 3)
+        scaled = continuous_inputs(_grid_item(8, scale=3.0))
+        torch.testing.assert_close(scaled["edge_attr"], coarse["edge_attr"])
+        fine = continuous_inputs(_grid_item(16))
+        torch.testing.assert_close(
+            fine["edge_attr"][:, 2].mean() - coarse["edge_attr"][:, 2].mean(),
+            -torch.log(torch.tensor(2.0)),
+        )
+        self.assertNotIn("wall_distance_ref", coarse)
+
     def test_volume_features_are_scale_and_translation_invariant(self):
         base = make_invariant(_grid_item())
         moved = make_invariant(_grid_item(scale=4.0, shift=(2.0, -1.0, 0.0)))

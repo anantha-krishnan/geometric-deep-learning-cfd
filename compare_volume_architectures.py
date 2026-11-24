@@ -106,8 +106,7 @@ def create_architecture_model(architecture, device):
         num_layers=architecture.get("num_layers", training.NUM_LAYERS),
         activation=architecture.get("activation", "default"),
         design_dim=architecture.get("design_dim", 3),
-        area_heads=architecture.get("area_heads", 0),
-        area_aggregation=architecture.get("area_aggregation", False),
+        aggregation=architecture.get("aggregation", "sum"),
     )
 
 
@@ -230,14 +229,8 @@ def architecture_choices(device=None, geom_dim=5, edge_dim=4, design_dim=3):
             },
             {
                 **latent_reference,
-                "name": "latent_attention32_area_read",
-                "area_heads": 2,
-            },
-            {
-                **latent_reference,
-                "name": "latent_attention32_area",
-                "area_heads": 2,
-                "area_aggregation": True,
+                "name": "latent_attention32_mean",
+                "aggregation": "mean",
             },
         ]
     )
@@ -348,13 +341,7 @@ def forward_item(model, item, device):
     geom = item["geom_norm"].to(device)
     params = item["params_norm"].to(device).unsqueeze(0).expand(geom.shape[0], -1)
     edge_attr = item["edge_attr"].to(device)
-    return model(
-        geom,
-        params,
-        item["edge_index"].to(device),
-        edge_attr,
-        areas=item["geom"][:, 3].to(device),
-    )
+    return model(geom, params, item["edge_index"].to(device), edge_attr)
 
 
 @torch.no_grad()
@@ -441,9 +428,7 @@ def train_with_validation(
             )
             edge_attr = batch["edge_attr"].to(device)
             optimizer.zero_grad(set_to_none=True)
-            prediction = model(
-                geom, params, edges, edge_attr, batch_idx=batch_idx, areas=areas
-            )
+            prediction = model(geom, params, edges, edge_attr, batch_idx=batch_idx)
             distance, threshold = training.near_wall_distance(batch)
             loss = training.near_body_weighted_mse(
                 prediction,
@@ -748,10 +733,11 @@ def main():
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument(
         "--variant",
-        choices=("geometry", *training.VARIANT_FRAMES),
+        choices=("geometry", "continuous", *training.VARIANT_FRAMES),
         default="geometry",
         help="invariant: body-scaled positions; two_scale: domain-scaled positions "
-        "with body-scaled wall distance and blockage inputs.",
+        "with body-scaled wall distance and blockage inputs; continuous: positions and "
+        "wall distance without cell size, edges as direction and log(distance / L_ref).",
     )
     parser.add_argument(
         "--stratify-inner",
@@ -825,6 +811,12 @@ def main():
             architecture["feature_names"] = feature_names(
                 data[0], training.VARIANT_FRAMES[args.variant]
             )
+        elif args.variant == "continuous":
+            architecture["feature_names"] = {
+                "node": ["x", "y", "wall_distance"],
+                "design": ["P_D1_r", "P_D2_r", "P_V"],
+                "edge": ["direction_x", "direction_y", "log_distance_over_L"],
+            }
         architecture_dir = args.results_dir / name
         architecture_dir.mkdir(parents=True, exist_ok=True)
         result = train_with_validation(

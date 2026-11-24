@@ -455,6 +455,8 @@ Reference row: the current Transolver implementation (`benchmarks/transolver`). 
 | Latent GNN + area read + area aggregation/graph mean, 400-epoch schedule | 3.093 | 10.516 | n/m | n/m | n/m |
 | Latent GNN + area-weighted read, T_max 1,000 early stop | 4.933 | 12.222 | n/m | n/m | n/m |
 | Latent GNN + area read + aggregation, T_max 1,000 early stop | 3.210 | 10.504 | n/m | n/m | n/m |
+| Latent GNN, continuous inputs (x, y, d; direction + log dist/L edges), sum | 1.417 | 4.019 | n/m | n/m | n/m |
+| Latent GNN, continuous inputs, mean aggregation | 1.914 | 4.895 | n/m | n/m | n/m |
 
 - n/m = not measured yet. Measurement rules for future rows: CD error from predicted pressure integrated over the body against the logged `Cd`; until wall shear is exported this is pressure drag only and must be labelled as such. Memory = peak training memory per design (state CPU RSS or GPU peak allocated). Inference time = mean forward time per design after warm-up, with hardware and thread count recorded. Backfill these three columns for existing rows before claiming any efficiency advantage.
 
@@ -561,3 +563,101 @@ Both protocols use the stratified fold-2 split, seed 2026, geometry inputs and C
 - Random 32,000-node sampling is uniform over nodes. Area weights over a uniform subset give an unbiased quadrature up to a constant, which cancels in the softmax and weighted means. Area-weighted reads should therefore be consistent between training subsets and the multi-pass full-mesh inference. This is a design argument, not a measurement. Isolated sampled nodes (about 42%) still receive no neighbour messages.
 - New `BenchmarkModel` kinds: `gnn_area_read` (2/4 area read heads) and `gnn_area` (also area-weighted aggregation and graph mean). Otherwise they are identical to the 398-epoch `gnn` run: width 32, 3 layers, 32 tokens, 4 heads, 91,780 parameters, Adam + OneCycleLR, 32,000 points, seed 2026, 96/16/40 split. As before, the evaluated checkpoint is the final epoch, not a validation-selected one.
 - Kaggle: re-upload the code dataset including `model.py` and `benchmarks/`, then run the new notebook cell in `gdl-transolver.ipynb` (`--models gnn_area_read gnn_area --epochs 398`). Results pending; compare against `volume_results/airfrans_reduced_20261122/kaggle_gnn_latentattention32_398epoch/`.
+
+## 2026-11-24 - Area-Weighted GNN on AirfRANS: Results (Mixed)
+
+- Only `gnn_area` was run (2/4 area read heads + area aggregation + area graph mean); `gnn_area_read` has not been run. Kaggle Tesla T4, torch 2.11.0+cu130 (same build and GPU as the `gnn` run), 398 epochs, final-epoch checkpoint, 5,679 s training. Artifacts: `volume_results/airfrans_reduced_20261122/kaggle_gnn_latentattention32_area_398epoch/`.
+- Final losses are higher than the count-weighted `gnn`: training 0.111 vs 0.095, validation (16 cases) 0.120 vs 0.109.
+
+| Held-out metric (40 cases) | GNN | GNN, area | Cases improved | Wilcoxon p |
+| --- | ---: | ---: | ---: | ---: |
+| Mean volume pressure MSE | 0.0561 | 0.0543 | 20/40 | 0.65 |
+| Median volume pressure MSE | 0.00986 | 0.01255 | | |
+| Mean surface pressure MSE | 0.1448 | 0.0608 | 15/40 | 0.35 |
+| Median surface pressure MSE | 0.00635 | 0.01335 | | |
+| Mean lift relative error | 0.855 | 0.646 | 16/40 | 0.25 |
+| Median lift relative error | 0.124 | 0.190 | | |
+| Lift Spearman | 0.947 | 0.892 | | |
+
+- **Means improve, typical cases worsen.** The mean gains come from a few hard cases. On the 14.684-degree outlier, surface MSE drops 3.41 -> 0.87 and volume MSE 0.87 -> 0.46. On 85.752_6.341, surface MSE drops 0.616 -> 0.030. Excluding the outlier, mean volume MSE worsens (0.0353 -> 0.0441) while mean surface MSE still improves (0.0611 -> 0.0401, mostly from the 85.752 case). Geometric-mean per-case ratios (area / count-weighted) are 1.05 for volume, 1.20 for surface and 1.23 for lift error. Low-angle cases (AoA < 5 degrees, n = 18) are hurt most: volume 1.16, surface 1.34; at AoA >= 5 degrees (n = 22) the ratios are 0.96 and 1.10. None of the paired differences is significant.
+- **Visual evidence (consistent with the physics hypothesis, not proof).** On the outlier, the count-weighted GNN has a broad, smooth suction-side offset extending far into the field. This is a global, low-frequency error, the kind an area-integral read should fix, and the area model largely removes it. The leading-edge suction peak remains underpredicted by both. Image: [outlier](volume_results/airfrans_reduced_20261122/gnn_area_analysis_20261124/airFoil2D_SST_90.415_14.684_4.356_6.209_11.299_gnn_vs_area.png). Others on the same shared scales: [85.752 gain](volume_results/airfrans_reduced_20261122/gnn_area_analysis_20261124/airFoil2D_SST_85.752_6.341_0.382_6.715_8.448_gnn_vs_area.png), [52.518 volume regression](volume_results/airfrans_reduced_20261122/gnn_area_analysis_20261124/airFoil2D_SST_52.518_12.114_1.135_6.268_0.0_5.676_gnn_vs_area.png), [56.39 lift regression](volume_results/airfrans_reduced_20261122/gnn_area_analysis_20261124/airFoil2D_SST_56.39_-3.195_4.964_2.726_18.605_gnn_vs_area.png).
+- **Hypothesis for the typical-case regression:** surface nodes carry about 1e-7 of the area, and area-weighted neighbour aggregation also down-weights fine near-wall neighbours relative to coarse ones. Both changes take near-wall detail away from local messages, which matters most for the attached low-angle flows. Separating read from aggregation (`gnn_area_read`) would test this.
+- Decision: no promotion. Next: run `gnn_area_read` alone (separates read from aggregation), then a second seed for `gnn` and the better area variant before drawing conclusions.
+
+## 2026-11-24 - AirfRANS `gnn_area_read`: Clear Regression
+
+- Run: area-weighted read only (2/4 heads); aggregation and graph mean are count-based. Kaggle T4, torch 2.11.0+cu130, 398 epochs, seed 2026, final-epoch checkpoint, same split. Artifacts: `volume_results/airfrans_reduced_20261122/airfrans_gnn_area_read_398epoch/`. Final training/validation loss 0.110/0.124, against 0.095/0.109 for `gnn`.
+
+| Held-out metric (40 cases) | GNN | Area read only | Area read + aggregation |
+| --- | ---: | ---: | ---: |
+| Mean volume pressure MSE | 0.0561 | 0.0774 | 0.0543 |
+| Median volume pressure MSE | 0.0099 | 0.0134 | 0.0126 |
+| Mean surface pressure MSE | 0.1448 | 0.8420 | 0.0608 |
+| Median surface pressure MSE | 0.0063 | 0.0103 | 0.0134 |
+| Mean lift relative error | 0.855 | 0.654 | 0.646 |
+| Lift Spearman | 0.947 | 0.923 | 0.892 |
+| Cases better than GNN, volume / surface | | 14 / 7 | 20 / 15 |
+| Per-case geometric-mean MSE ratio vs GNN, volume / surface | | 1.31 / 1.51 | 1.05 / 1.20 |
+| Paired Wilcoxon p, volume / surface | | 0.0007 / 0.0002 | 0.65 / 0.35 |
+
+- Area read only is significantly worse than the count-weighted GNN on both pressure metrics, at low and high angles of attack alike (volume ratio 1.30 / 1.32). On the 14.684-degree outlier its surface MSE is 29.9, against 3.41 for `gnn` and 0.87 for `gnn_area`. Mean lift error is lower but the median is worse (0.124 -> 0.204); per case the ratio is about 1.0.
+- Visual check of the outlier on shared scales ([image](volume_results/airfrans_reduced_20261122/gnn_area_analysis_20261124/airFoil2D_SST_90.415_14.684_4.356_6.209_11.299_three_gnn.png)): read-only reduces part of the broad suction-side offset but has large leading-edge errors. Read + aggregation shows the smallest far-field error.
+- Correction to the previous entry's interpretation: the area-weighted read is not what helped the outlier in `gnn_area`. Within this pair of runs, the gain must come from area-weighted aggregation and/or the area-weighted graph mean, or their combination with the read. The earlier explanation (the integral read fixes global offsets) is not supported. The earlier hypothesis that aggregation hurts typical cases is also contradicted: read-only is worse on typical cases than read + aggregation.
+- Private-data context: the 400-epoch private runs had suggested the reverse (read-only best mean RMSE). Single-seed results disagree across datasets, so neither ordering is established.
+- Decision: drop the area-weighted read as a standalone option on AirfRANS; no promotion. If area weighting is pursued, test aggregation + graph mean without the read (a variant not yet implemented), with at least two seeds against `gnn`.
+
+## 2026-11-24 - Log-Area Weighting Removed; Continuous Inputs, Mean Aggregation and a 2x Refinement Test
+
+### Decisions
+
+- Raw log-area weighting was removed from the code completely: `area_heads`, `area_aggregation`, the `gnn_area*` AirfRANS kinds and nodal dual areas. The entries above are its record. Its checkpoints remain on disk but no longer load with the current model code. The original count-weighted checkpoints still load; verified for the AirfRANS `gnn` checkpoint and the private GPU geometry checkpoint.
+- New option `aggregation="mean"`: neighbour messages are averaged (sum / count) instead of summed, a self-normalising pooling independent of node degree and sampling density. The latent read (softmax) and the graph mean were already self-normalising. Default stays `sum`; parameter count is unchanged.
+- New private-data variant `continuous`: node inputs are [x, y, wall distance] in metres; raw cell area is dropped from node inputs. Design inputs are unchanged. Edge inputs are [unit direction, log(distance / L_ref)] with L_ref the body length, so edges carry no cell measures. Near-wall loss and metrics keep the 0.05 m band, so the run is comparable with the geometry baseline. Caveat recorded before testing: log(distance / L_ref) is scale-invariant but not refinement-invariant (it shifts by -log 2 under 2x refinement).
+- AirfRANS kinds: `gnn_mean` (mean aggregation), `gnn_rel` ([direction, log distance] edges; coordinates are in chords) and `gnn_mean_rel`. `benchmarks.airfrans.evaluate --points N` re-evaluates a trained run at another sampling density (output `evaluation_N/`).
+- New `refine_volume.py`: each polygon cell is split into one quad per vertex (vertex, edge midpoints, vertex-mean centre), i.e. 2x refinement for quads. Children tile their parents (checked against loader areas). Adjacency comes from siblings and from shared half-faces across parent faces. Wall distance is the exact distance to the WALL segments. No CFD exists on the refined mesh, so child predictions are area-averaged onto parents and compared with the CFD and with the original-mesh prediction ("consistency").
+- Wall-distance control: on Design_1 the exported STAR-CCM+ wall distance and the geometric distance differ by median 6.8e-5 m (max 9.5e-4 m; near-wall median 1.9% relative). Predicting on the original mesh with geometric wall distance changes mean RMSE by at most 0.002 Pa (geometry 2.412 -> 2.414, continuous 1.417 -> 1.417). The refinement differences below are therefore not a wall-distance artefact.
+- Verification: 76 tests pass (mean-aggregation degree invariance and checkpoints, continuous features, refinement tiling and adjacency, new AirfRANS kinds); Ruff and ty pass.
+
+### Private data: stratified fold 2, seed 2026, CUDA, T_max 1,000 with early stopping (same protocol as the 2.41 Pa GPU baseline)
+
+Command: `uv run python -u compare_volume_architectures.py --design Design_1 --stratify-inner --variant continuous --architectures latent_attention32 latent_attention32_mean --max-epochs 1000 --minimum-epochs 100 --validation-interval 10 --patience 8 --results-dir volume_results/continuous_20261124 --comparison-dir volume_results/gpu_latent_attention_geometry_20261122/latent_attention32 --comparison-label "Latent attention, geometry inputs (GPU)"`.
+
+| Model (latent attention, width 32) | Params | Best epoch | Inner val. loss | Mean RMSE [Pa] | Worst [Pa] | Near-wall 0.05 m [Pa] | Pooled R-squared |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Geometry inputs, sum (2026-11-22 GPU) | 92,097 | 570 | 0.00394 | 2.412 | 3.286 | 6.843 | 0.9730 |
+| Continuous inputs, sum | 91,937 | 550 | 0.00296 | **1.417** | **2.595** | **4.019** | 0.9899 |
+| Continuous inputs, mean | 91,937 | 490 | 0.00200 | 1.914 | 3.536 | 4.895 | 0.9798 |
+
+- Continuous inputs with sum aggregation are the best GNN so far: whole-domain RMSE -41% and near-wall RMSE -41% against the geometry baseline. Mean RMSE is better on all six outer designs (e.g. Design_14 3.29 -> 1.57 Pa; smallest gain Design_26 2.98 -> 2.60 Pa). It approaches the GPU Transolver (1.11 / 2.02 Pa) but does not match it. The change combines dropping cell area from node inputs, dropping z and replacing the edge features, so it does not isolate which of these mattered.
+- Mean aggregation reached the lowest inner-validation loss but is worse on the outer designs than sum (1.91 vs 1.42 Pa; worst design Design_14 at 3.54 Pa). Inner-validation and outer rankings disagree, which is consistent with the known single-seed variance.
+- Visual: [Design_14 comparison](volume_results/continuous_20261124/latent_attention32/Design_14_comparison.png). The continuous model removes most of the broad upstream offset seen in the geometry model and has a sharper stagnation region. Other designs are in `volume_results/continuous_20261124/{latent_attention32,latent_attention32_mean}/`.
+
+### 2x refinement test (held-out outer designs; no retraining)
+
+Command: `uv run python -u refine_volume.py --model NAME CHECKPOINT VARIANT --output volume_results/refinement_20261124`.
+
+| Model | Original mesh RMSE / near-wall [Pa] | Refined mesh (parent-averaged) RMSE / near-wall [Pa] | Consistency RMSE [Pa] |
+| --- | ---: | ---: | ---: |
+| Geometry, sum | 2.412 / 6.843 | 2.428 / 8.795 | 2.133 |
+| Continuous, sum | 1.417 / 4.019 | 1.973 / 8.197 | 2.061 |
+| Continuous, mean | 1.914 / 4.895 | 3.059 / 7.715 | 2.670 |
+
+- The expectation that local message passing plus latent tokens is strongly resolution-stable is **not supported**. For every model, refined-minus-original prediction differences (2.1-2.7 Pa RMSE) are as large as the model's own error against CFD. Near-wall error roughly doubles for the continuous models (4.0 -> 8.2 Pa). The geometry model's whole-domain RMSE is barely changed, but its near-wall error also rises (6.8 -> 8.8 Pa).
+- Pattern ([continuous Design_3](volume_results/refinement_20261124/continuous_sum/Design_3_refinement.png)): a smooth +5-10 Pa offset upstream, a -5 Pa offset downstream, and suction peaks deepened by about 20-25 Pa at the body shoulders. The refined field remains smooth and plausible but is shifted.
+- Interpretation (hypotheses, not tested): uniform splitting preserves cell-count proportions, so count-weighted token reads and graph means should change little. The likely causes are local. (1) Edge inputs shift with spacing: log(distance / L_ref) by -0.69 in the continuous model; cell area falls 4x in the geometry model's node inputs. (2) Three message-passing hops cover half the physical distance on the refined mesh. (3) Children near the wall are thinner than any cell seen in training. Mean aggregation does not help here, because interior quad degree is about 4 on both meshes.
+- Limitations: one seed, one outer fold of previously inspected designs, a synthetic refinement (vertex-mean centres, hanging-node-free quads, no refined CFD), and no retraining on mixed resolutions.
+
+### AirfRANS sampling-density check of the existing `gnn` (sum) checkpoint, inference only, local laptop GPU
+
+| Nodes per inference pass | Volume pressure MSE | Surface pressure MSE | Mean lift rel. error | Lift Spearman |
+| --- | ---: | ---: | ---: | ---: |
+| 16,000 | 0.0553 | 0.1404 | 0.882 | 0.947 |
+| 32,000 (training density; Kaggle evaluation) | 0.0561 | 0.1448 | 0.855 | 0.947 |
+| 64,000 | 0.0618 | 0.1629 | 0.817 | 0.944 |
+
+- The sum-aggregation GNN is fairly stable to halving the sampling density but degrades by about 10% at double density. A plausible cause is that more nodes keep their mesh neighbours, so summed messages grow (degree shift). `gnn_mean` is designed to remove this. Artifacts: `evaluation_16000/` and `evaluation_64000/` in `volume_results/airfrans_reduced_20261122/kaggle_gnn_latentattention32_398epoch/`.
+
+### Next
+
+- Kaggle: `gnn_mean` and `gnn_mean_rel`, evaluated at 16k / 32k / 64k (notebook cell 5).
+- Private: test refinement robustness directly, e.g. edge inputs that are refinement-invariant (distance / local cell size) combined with continuous nodes, or training on mixed native and refined meshes. Repeat seeds before promoting the continuous variant.

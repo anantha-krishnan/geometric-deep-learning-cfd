@@ -194,3 +194,33 @@ def reference_length(item):
         return None
     bounds = item["body_bounds"]
     return float(bounds[1, FLOW_AXIS] - bounds[0, FLOW_AXIS])
+
+
+def relative_edge_attr(position, edge_index, length):
+    """[unit direction, log(distance / L_ref)]: no cell measures on edges."""
+    source, destination = edge_index
+    displacement = position[destination] - position[source]
+    distance = displacement.norm(dim=1, keepdim=True).clamp_min(1e-30)
+    return torch.cat([displacement / distance, (distance / length).log()], dim=1)
+
+
+def continuous_inputs(item):
+    """Continuous-coordinate inputs: nodes [position, wall distance], no cell size.
+
+    Positions and wall distance stay in metres (standardised later); edges carry the
+    direction and the log of the neighbour distance in body lengths.
+    """
+    if item.get("mesh_kind") != "volume" or item["geom"].shape[1] < 5:
+        raise ValueError("Continuous inputs need a volume item with wall distance.")
+    length = reference_length(item)
+    if length is None or not math.isfinite(length) or length <= 0:
+        raise ValueError(f"{item.get('design_name')} has no positive body length.")
+    position = item["geom"][:, :3]
+    position = position[:, active_axes(position)]
+    return {
+        **item,
+        "length_ref": length,
+        "node_features": torch.cat([position, item["geom"][:, 4:5]], dim=1).float(),
+        "design_features": item["params"].float(),
+        "edge_attr": relative_edge_attr(position, item["edge_index"], length).float(),
+    }

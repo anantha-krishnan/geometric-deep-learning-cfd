@@ -49,8 +49,9 @@ def plot_case(case, predictions, path):
         "reference": "Reference Transolver",
         "local": "Local Transolver",
         "gnn": "Latent-attention GNN",
-        "gnn_area_read": "GNN, area-weighted read",
-        "gnn_area": "GNN, area read + aggregation",
+        "gnn_mean": "GNN, mean aggregation",
+        "gnn_rel": "GNN, relative edges",
+        "gnn_mean_rel": "GNN, mean + relative edges",
     }
     labels = ["CFD", *[model_names.get(kind, kind.title()) for kind in predictions]]
     fields = [actual, *[values[:, 2] for values in predictions.values()]]
@@ -188,14 +189,25 @@ def main():
     )
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--points",
+        type=int,
+        help="Nodes per inference pass (default: training value). Other values test "
+        "stability to sampling density and write to evaluation_<points>/.",
+    )
     args = parser.parse_args()
     config = json.loads((args.run_dir / "config.json").read_text())
+    points = args.points or config["points"]
+    if points < 1:
+        parser.error("--points must be positive.")
     names = json.loads(args.splits.read_text())["splits"]["test"][: args.limit]
     with np.load(args.run_dir / "normalization.npz") as saved:
         statistics = dict(saved)
     device = torch.device("cuda")
     models = load_models(args.run_dir, args.reference, device)
-    output = args.run_dir / "evaluation"
+    output = args.run_dir / (
+        "evaluation" if points == config["points"] else f"evaluation_{points}"
+    )
     output.mkdir(exist_ok=False)
     rows = {kind: [] for kind in models}
     for index, name in enumerate(names):
@@ -204,7 +216,7 @@ def main():
             args.data,
             models,
             statistics,
-            config["points"],
+            points,
             config["seed"] + index,
             device,
         )
