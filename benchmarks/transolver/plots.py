@@ -125,3 +125,101 @@ def plot_benchmark_comparison(
     figure.suptitle(title)
     figure.savefig(output, dpi=200, facecolor="white")
     plt.close(figure)
+
+
+def _draw_scatter(axis, positions, values, cmap, norm, title, bounds=None):
+    """Draw one AirfRANS point cloud with one shared scale."""
+    collection = axis.scatter(
+        positions[:, 0],
+        positions[:, 1],
+        c=values,
+        cmap=cmap,
+        norm=norm,
+        s=1.2,
+        edgecolors="none",
+        rasterized=True,
+    )
+    if bounds is None:
+        axis.set(
+            xlim=(positions[:, 0].min(), positions[:, 0].max()),
+            ylim=(positions[:, 1].min(), positions[:, 1].max()),
+            xlabel="x [m]",
+        )
+    else:
+        axis.set(xlim=bounds[:2], ylim=bounds[2:], xlabel="x [m]")
+    axis.set_aspect("equal", adjustable="box")
+    axis.set_title(title, fontsize=9)
+    return collection
+
+
+def plot_airfrans_comparison(positions, actual, predictions, title, output, zoom=None):
+    """Plot CFD and paired Transolver predictions with full-domain and zoomed views."""
+    labels = list(predictions)
+    pressure_norm = plt.Normalize(
+        min(float(actual.min()), *(float(p.min()) for p in predictions.values())),
+        max(float(actual.max()), *(float(p.max()) for p in predictions.values())),
+    )
+    errors = {label: np.abs(predictions[label] - actual) for label in labels}
+    error_high = max(float(np.percentile(error, 99)) for error in errors.values())
+    error_norm = plt.Normalize(0.0, max(error_high, 1e-12))
+    if zoom is None:
+        zoom = (-0.35, 1.35, -0.45, 0.45)
+
+    columns = len(labels) + 1
+    figure, axes = plt.subplots(
+        3,
+        columns,
+        figsize=(5.2 * columns, 10),
+        layout="constrained",
+        squeeze=False,
+        gridspec_kw={"height_ratios": (1, 1, 2)},
+    )
+    pressure = _draw_scatter(
+        axes[0, 0], positions, actual, "turbo", pressure_norm, "Actual CFD"
+    )
+    axes[1, 0].set_axis_off()
+    _draw_scatter(
+        axes[2, 0],
+        positions,
+        actual,
+        "turbo",
+        pressure_norm,
+        "Actual CFD | near airfoil",
+        zoom,
+    )
+
+    for column, label in enumerate(labels, start=1):
+        _draw_scatter(
+            axes[0, column],
+            positions,
+            predictions[label],
+            "turbo",
+            pressure_norm,
+            f"{label}",
+        )
+        error = _draw_scatter(
+            axes[1, column],
+            positions,
+            errors[label],
+            "magma",
+            error_norm,
+            f"{label} | |error|",
+        )
+        _draw_scatter(
+            axes[2, column],
+            positions,
+            predictions[label],
+            "turbo",
+            pressure_norm,
+            f"{label} | near airfoil",
+            zoom,
+        )
+
+    for row_axes in axes:
+        row_axes[0].set_ylabel("y [m]")
+    figure.colorbar(pressure, ax=axes[0, :], label="Pressure [normalized MSE scale]")
+    figure.colorbar(error, ax=axes[1, :], label="|Error| (p99 clip)")
+    figure.colorbar(pressure, ax=axes[2, :], label="Pressure [normalized MSE scale]", shrink=0.8)
+    figure.suptitle(title)
+    figure.savefig(output, dpi=200, facecolor="white")
+    plt.close(figure)

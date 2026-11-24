@@ -965,6 +965,154 @@ Further work improves Transolver one change at a time: two-scale inputs,
 area-weighted slicing (discretisation-invariant slice averages), a corrected
 learning-rate schedule, seeds and capacity, then conservation losses.
 
+\subsection{Reduced AirfRANS: GNN Versus Authors' Transolver}
+\label{sec:airfrans}
+We compare the authors' released Transolver implementation~\cite{wu2024transolver}
+with our latent-attention GNN on a reduced subset of AirfRANS. Both models used
+the same 96 training, 16 validation and 40 held-out test cases, seed 2026,
+32{,}000 randomly sampled nodes per step, 398 epochs, Adam and OneCycleLR with
+maximum learning rate $10^{-3}$. The split lists and training-set normalisation
+statistics were verified to match across runs. Inputs comprise position, inlet
+velocity, wall distance and surface normal; the four outputs are the two velocity
+components, reduced pressure and turbulent viscosity. The loss is the sum of
+mean squared errors over surface and non-surface nodes, averaged over the four
+standardised outputs. The Transolver uses eight layers of width 256, eight heads
+and 32 slices; the GNN uses three width-32 message-passing layers, global mean
+pooling and 32 latent tokens with four attention heads. The checkpoints contain
+5{,}996{,}868 and 91{,}780 parameters respectively. The GNN used the default
+ReLU/GELU activations, not the $\tanh$ variant used in the private-data study.
+
+Both runs saved the final epoch. The lowest recorded GNN validation loss was at
+epoch 398; the reference's was at epoch 380, but only its final checkpoint was
+evaluated. The reference ran on an RTX PRO 4000 Blackwell laptop GPU and the GNN
+on a Kaggle Tesla T4, so their recorded times and memory are not a controlled
+efficiency comparison. This subset is not a reproduction of the published
+full-data result: the paper describes 800 training and 200 test cases, while the
+present experiment uses only 96 cases for gradient updates. Other protocol and
+metric differences also preclude direct numerical comparison.
+
+For evaluation, repeated random subsets cover every mesh node and overlapping
+predictions are averaged. Pressure MSE is computed separately over non-surface
+and surface nodes after standardisation using training-set statistics, then
+averaged equally across test cases. Lift is obtained by integrating pressure and
+velocity-derived wall shear, and mean relative error averages
+$|C_L-\widehat C_L|/|C_L|$ across cases. Spearman correlation compares the
+ranking of the 40 predicted and reference lift coefficients. These metrics are
+computed by the local evaluation pipeline, not by rerunning the complete
+authors' evaluation script.
+
+\begin{table}[t]
+\centering
+\caption{Matched reduced AirfRANS results: mean per-case standardised pressure
+MSE and lift scores. Lower is better except for Spearman correlation.}
+\label{tab:airfrans_mse}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrr}
+\toprule
+Metric & Authors' Transolver & GNN \\
+\midrule
+Volume pressure MSE & 0.0850 & \textbf{0.0561} \\
+Surface pressure MSE & 0.6920 & \textbf{0.1448} \\
+Mean relative lift error & 1.6751 & \textbf{0.8546} \\
+Lift Spearman correlation & 0.9413 & \textbf{0.9465} \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+Table~\ref{tab:airfrans_mse} shows reductions of 34.0\% in mean volume MSE
+and 79.1\% in mean surface MSE. The GNN improves volume pressure MSE on 36 of
+40 cases and surface pressure MSE on 35; median surface MSE decreases from
+0.0222 to 0.00635. The largest reference surface error occurs at
+$14.684^\circ$: 23.0785 for Transolver versus 3.4092 for the GNN. Excluding
+this case, the mean surface scores are 0.1179 and 0.0611, respectively: a 48\%
+reduction remains. Mean lift relative error is sensitive to small true lift
+values; the median is 0.2443 for Transolver and 0.1238 for the GNN. The
+high-angle case illustrates that pressure and lift need not improve together:
+its relative lift errors are 0.0086 and 0.3694, respectively. The small
+Spearman difference should not be treated as conclusive from one seed.
+
+\begin{table}[t]
+\centering
+\caption{Retrospective regional pressure comparison across 40 held-out cases.
+Regions are node-weighted and their case MSEs are averaged equally.}
+\label{tab:airfrans_regions}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrr}
+\toprule
+Region & MSE reduction & GNN wins \\
+\midrule
+Leading surface, $x/c<0.1$ & 79\% & 34/40 \\
+Middle surface, $0.1\leq x/c<0.7$ & 16\% & 31/40 \\
+Trailing surface, $x/c\geq0.7$ & 54\% & 36/40 \\
+Non-surface, wall distance $<0.02c$ & 31\% & 35/40 \\
+Wake, $1\leq x/c\leq1.5$ & 71\% & 34/40 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+In Table~\ref{tab:airfrans_regions}, $x/c$ is measured from the minimum surface
+$x$ coordinate using the surface's streamwise extent $c$; the wake also requires
+$|y|<0.2c$. These are exploratory geometric boxes rather than aerodynamic
+streamlines or official benchmark regions, and the regions overlap. The
+leading-edge mean reduction remains approximately 46\% when the high-angle
+outlier is excluded. The common-scale comparison in Fig.~\ref{fig:airfrans_gnn}
+shows this outlier; other saved examples include a case where GNN pressure
+performance regresses. None of these pressure results establishes better
+velocity, wall shear or drag prediction.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{volume_results/airfrans_reduced_20261122/gnn_reference_analysis_20261123/airFoil2D_SST_90.415_14.684_4.356_6.209_11.299_cfd_reference_gnn.png}
+\caption{Held-out $14.684^\circ$ AirfRANS case: CFD, authors' Transolver and
+latent-attention GNN pressure and absolute errors. Pressure shares one scale
+across columns; errors share a second scale clipped at the 99th percentile.}
+\label{fig:airfrans_gnn}
+\end{figure*}
+
+The paper reports volume and surface pressure, lift error and lift rank
+correlation in its AirfRANS table~\cite{wu2024transolver}. Its text describes
+relative $L_2$ while the released evaluation code calculates per-variable MSE;
+the precise correspondence of those descriptions requires verification.
+Table~\ref{tab:airfrans_l2} therefore provides a separately defined retrospective
+calculation, not a purported reproduction of the published scores. Pressure
+entries are the mean over cases of $\|p-\widehat p\|_2/\|p\|_2$ on the saved
+unstandardised pressure fields in each region; lift is the single relative
+$L_2$ norm over all 40 coefficients. These ratios depend on the pressure
+reference and must not be confused with the standardised MSE values above.
+
+\begin{table}[t]
+\centering
+\caption{Paper-shaped metrics with explicitly defined retrospective relative
+$L_2$ aggregation; not directly comparable to published scores.}
+\label{tab:airfrans_l2}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrr}
+\toprule
+Metric & Authors' Transolver & GNN \\
+\midrule
+Mean volume pressure relative $L_2$ & 0.6001 & \textbf{0.4351} \\
+Mean surface pressure relative $L_2$ & 0.4983 & \textbf{0.2774} \\
+Lift relative $L_2$ over cases & 0.4789 & \textbf{0.2151} \\
+Lift Spearman correlation & 0.9413 & \textbf{0.9465} \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+One possible explanation is that local mesh communication complements global
+latent-token attention, while the smaller model may be better suited to limited
+training data. These are hypotheses, not isolated causal effects: an inspected
+32{,}000-node sample of the high-angle case left 42.2\% of nodes without a
+retained mesh neighbour, so global attention, pooling, capacity and optimisation
+could all contribute. Graph and attention ablations, repeated seeds and
+validation-selected checkpoints for both models are needed. Our separate local
+Transolver obtained lower mean relative lift error than the GNN (0.7813 versus
+0.8546), despite worse pressure and lift ranking, reinforcing that no model wins
+every metric. The saved per-case predictions contain pressure only, so a full
+recomputation of velocity, viscosity and force metrics requires renewed inference.
+
 % =============================================================================
 \section{Discussion}
 \label{sec:discussion}
@@ -1100,15 +1248,9 @@ our discrete operator.
 of eddy viscosity across geometries; improving on the closure itself needs
 higher-fidelity (LES/DNS) data.
 \end{enumerate}
-An initial reference-Transolver run used 96 training, 16 validation and 40 held-out
-AirfRANS cases for 398 epochs. Mean normalized pressure MSE was 0.0850 in the
-volume and 0.6920 at the surface; lift Spearman correlation was 0.9413. One
-14.684-degree test case dominated the surface-pressure mean (MSE 23.08), while
-the median was 0.0222. This reduced-data result is substantially worse than the
-published values and is not paper parity: only 96 cases received gradient updates,
-compared with 720 in the authors' setup. The shared-scale outlier comparison is
-at \path{volume_results/airfrans_reduced_20261122/laptop_reference_398epoch/evaluation/worst_surface_case.png}.
-No checkpoint is to be promoted to production before step~1.
+The reduced AirfRANS comparison and its outstanding validation requirements
+are detailed in Section~\ref{sec:airfrans}; no checkpoint is promoted on the
+strength of this single-seed result.
 
 % =============================================================================
 \section{Conclusion}
@@ -1124,9 +1266,14 @@ model by 21.9\,\%, giving the best GNN results on the original split (2.92\,Pa m
 9.35\,Pa near-body, 3.97\,Pa worst-design RMSE). After correcting the split and
 the input scaling (Section~\ref{sec:exp_transolver}), a Transolver benchmark
 became clearly best (1.39\,Pa mean, 2.77\,Pa near-wall), and it is now the
-baseline for further improvements. These conclusions are
-provisional: they rest on one seed and a reused outer fold, and the hardest
-cases are parametric extrapolations. The project's main methodological lesson
+baseline for further improvements on that dataset. On a separate reduced
+AirfRANS split, the latent-attention GNN instead achieved lower pressure MSE
+than the authors' Transolver on most held-out cases, including near the leading
+edge and in a defined wake region (Section~\ref{sec:airfrans}). The difference
+between datasets does not establish a general architecture ranking. Both
+comparisons are provisional and use one seed. The private-data comparison also
+reuses an outer fold whose hardest cases are parametric extrapolations. The
+project's main methodological lesson
 is that aggregate metrics must be paired with shared-scale field images,
 capacity-matched controls and properly separated selection data before any
 architectural claim is made.
