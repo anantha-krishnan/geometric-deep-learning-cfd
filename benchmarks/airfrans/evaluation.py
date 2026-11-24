@@ -26,9 +26,14 @@ def predict_full(model, case, statistics, sample_size, seed, device):
         indices = rng.choice(count, min(sample_size, count), replace=False)
         inputs = torch.as_tensor(case["x"][indices], device=device)
         positions = torch.as_tensor(case["pos"][indices], device=device)
-        if getattr(model, "kind", None) == "gnn":
+        if getattr(model, "uses_graph", False):
             edge_index = induced_subgraph(case["edge_index"], indices, count).to(device)
-            prediction = model(inputs, positions, edge_index)
+            areas = (
+                torch.as_tensor(case["areas"][indices], device=device)
+                if getattr(model, "uses_areas", False)
+                else None
+            )
+            prediction = model(inputs, positions, edge_index, areas)
         else:
             prediction = model(inputs, positions)
         total[indices] += prediction.cpu().numpy()

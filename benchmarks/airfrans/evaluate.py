@@ -49,6 +49,8 @@ def plot_case(case, predictions, path):
         "reference": "Reference Transolver",
         "local": "Local Transolver",
         "gnn": "Latent-attention GNN",
+        "gnn_area_read": "GNN, area-weighted read",
+        "gnn_area": "GNN, area read + aggregation",
     }
     labels = ["CFD", *[model_names.get(kind, kind.title()) for kind in predictions]]
     fields = [actual, *[values[:, 2] for values in predictions.values()]]

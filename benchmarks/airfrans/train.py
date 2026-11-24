@@ -15,7 +15,7 @@ from benchmarks.airfrans.data import (
     load_case,
     normalize_case,
 )
-from benchmarks.airfrans.training import BenchmarkModel, physics_loss
+from benchmarks.airfrans.training import MODEL_KINDS, BenchmarkModel, physics_loss
 
 
 def load_training_data(root, splits):
@@ -34,7 +34,7 @@ def load_training_data(root, splits):
     return training, validation, statistics
 
 
-def sample_case(case, size, rng, device, include_edges=False):
+def sample_case(case, size, rng, device, include_edges=False, include_areas=False):
     if len(case["x"]) < size:
         raise ValueError(f"{case['name']} has fewer than {size} nodes.")
     indices = rng.choice(len(case["x"]), size, replace=False)
@@ -44,12 +44,18 @@ def sample_case(case, size, rng, device, include_edges=False):
             raise ValueError(f"{case['name']} has no mesh edge index.")
         edge_index = induced_subgraph(case["edge_index"], indices, len(case["x"]))
         edge_index = edge_index.to(device)
+    areas = None
+    if include_areas:
+        if "areas" not in case:
+            raise ValueError(f"{case['name']} has no nodal areas.")
+        areas = torch.as_tensor(case["areas"][indices], device=device)
     return (
         torch.as_tensor(case["x"][indices], device=device),
         torch.as_tensor(case["pos"][indices], device=device),
         torch.as_tensor(case["y"][indices], device=device),
         torch.as_tensor(case["surface"][indices], device=device),
         edge_index,
+        areas,
     )
 
 
@@ -59,12 +65,12 @@ def validation_loss(model, cases, sample_size, seed, device):
     losses = []
     with torch.no_grad():
         for case in cases:
-            inputs, positions, targets, surface, edge_index = sample_case(
-                case, sample_size, rng, device, include_edges=model.kind == "gnn"
+            inputs, positions, targets, surface, edge_index, areas = sample_case(
+                case, sample_size, rng, device, model.uses_graph, model.uses_areas
             )
             losses.append(
                 physics_loss(
-                    model(inputs, positions, edge_index), targets, surface
+                    model(inputs, positions, edge_index, areas), targets, surface
                 ).item()
             )
     return float(np.mean(losses))
@@ -87,15 +93,18 @@ def train_model(kind, training, validation, statistics, args, device, output):
         model.train()
         losses = []
         for index in rng.permutation(len(training)):
-            inputs, positions, targets, surface, edge_index = sample_case(
+            inputs, positions, targets, surface, edge_index, areas = sample_case(
                 training[index],
                 args.points,
                 rng,
                 device,
-                include_edges=model.kind == "gnn",
+                model.uses_graph,
+                model.uses_areas,
             )
             optimizer.zero_grad(set_to_none=True)
-            loss = physics_loss(model(inputs, positions, edge_index), targets, surface)
+            loss = physics_loss(
+                model(inputs, positions, edge_index, areas), targets, surface
+            )
             if not torch.isfinite(loss):
                 raise ValueError(f"Non-finite {kind} loss at epoch {epoch + 1}.")
             loss.backward()
@@ -149,7 +158,7 @@ def main():
     parser.add_argument(
         "--models",
         nargs="+",
-        choices=("reference", "local", "gnn"),
+        choices=MODEL_KINDS,
         default=["reference"],
         help="Implementation(s) to train; defaults to the paper reference.",
     )

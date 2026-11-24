@@ -32,10 +32,17 @@ def physics_loss(predictions, targets, surface):
     return squared_error[surface].mean() + squared_error[~surface].mean()
 
 
+# Latent-attention GNN kinds: (area-weighted read heads, area-weighted aggregation).
+GNN_KINDS = {"gnn": (0, False), "gnn_area_read": (2, False), "gnn_area": (2, True)}
+MODEL_KINDS = ("reference", "local", *GNN_KINDS)
+
+
 class BenchmarkModel(nn.Module):
     def __init__(self, kind, reference_path=None):
         super().__init__()
         self.kind = kind
+        self.uses_graph = kind in GNN_KINDS
+        self.uses_areas = self.uses_graph and GNN_KINDS[kind] != (0, False)
         if kind == "local":
             from benchmarks.transolver.model import Transolver
 
@@ -49,9 +56,10 @@ class BenchmarkModel(nn.Module):
                 num_heads=8,
                 mlp_ratio=2,
             )
-        elif kind == "gnn":
+        elif kind in GNN_KINDS:
             from model import Milestone1_GNN
 
+            area_heads, area_aggregation = GNN_KINDS[kind]
             self.model = Milestone1_GNN(
                 geom_dim=7,
                 design_dim=0,
@@ -62,6 +70,8 @@ class BenchmarkModel(nn.Module):
                 use_global=True,
                 attention_tokens=32,
                 attention_heads=4,
+                area_heads=area_heads,
+                area_aggregation=area_aggregation,
             )
         elif kind == "reference":
             if reference_path is None:
@@ -93,14 +103,16 @@ class BenchmarkModel(nn.Module):
         else:
             raise ValueError(f"Unknown model kind: {kind}")
 
-    def forward(self, inputs, positions, edge_index=None):
+    def forward(self, inputs, positions, edge_index=None, areas=None):
         if self.kind == "reference":
             return self.model(SimpleNamespace(x=inputs, pos=positions))
-        if self.kind == "gnn":
+        if self.uses_graph:
             if edge_index is None:
                 raise ValueError("The AirfRANS GNN requires mesh edge indices.")
             params = inputs.new_empty((len(inputs), 0))
             batch_idx = torch.zeros(len(inputs), dtype=torch.long, device=inputs.device)
-            return self.model(inputs, params, edge_index, batch_idx=batch_idx)
+            return self.model(
+                inputs, params, edge_index, batch_idx=batch_idx, areas=areas
+            )
         inputs = torch.cat((inputs, positional_features(positions)), dim=1)
         return self.model(inputs, inputs.new_empty((len(inputs), 0)))

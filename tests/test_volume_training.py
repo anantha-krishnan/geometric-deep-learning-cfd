@@ -25,6 +25,29 @@ def make_graph(name="Design_1", speed=2.0):
     }
 
 
+def split_cell(geom, params, edges, edge_attr, areas, copies):
+    """Refine cell 0 into ``copies`` identical cells sharing its area and faces."""
+    extra = torch.arange(len(geom), len(geom) + copies - 1)
+    new_edges, new_attr = [edges], [edge_attr]
+    for copy in extra:
+        for column in (0, 1):
+            touches = edges[column] == 0
+            duplicate = edges[:, touches].clone()
+            duplicate[column] = copy
+            new_edges.append(duplicate)
+            new_attr.append(edge_attr[touches])
+    split_areas = torch.cat([areas, areas[:1].expand(copies - 1)])
+    split_areas[0] = areas[0] / copies
+    split_areas[len(geom) :] = areas[0] / copies
+    return (
+        torch.cat([geom, geom[:1].expand(copies - 1, -1)]),
+        torch.cat([params, params[:1].expand(copies - 1, -1)]),
+        torch.cat(new_edges, dim=1),
+        torch.cat(new_attr),
+        split_areas,
+    )
+
+
 class VolumeTrainingTests(unittest.TestCase):
     def test_attention_is_graph_isolated_and_node_permutation_equivariant(self):
         torch.manual_seed(7)
@@ -127,6 +150,79 @@ class VolumeTrainingTests(unittest.TestCase):
             training.predict_pressure(
                 restored, normalized[0], restored_scalers[2], torch.device("cpu")
             ),
+        )
+
+    def test_area_weighted_model_is_invariant_to_splitting_a_cell(self):
+        torch.manual_seed(3)
+        cells, copies = 6, 3
+        geom, params = torch.randn(cells, 5), torch.randn(cells, 3)
+        edges = torch.tensor(
+            [[0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 0, 3], [1, 0, 2, 1, 3, 2, 4, 3, 5, 4, 3, 0]]
+        )
+        edge_attr = torch.randn(edges.shape[1], 4)
+        areas = torch.rand(cells) * 10 + 0.1
+        split = split_cell(geom, params, edges, edge_attr, areas, copies)
+
+        def outputs(**options):
+            torch.manual_seed(5)
+            model = models.Milestone1_GNN(
+                geom_dim=5, hidden_dim=8, num_layers=2, out_dim=1, edge_dim=4,
+                use_global=True, attention_tokens=4, attention_heads=2, **options,
+            ).eval()  # fmt: skip
+            with torch.no_grad():
+                return (
+                    model(geom, params, edges, edge_attr, areas=areas),
+                    model(*split[:-1], areas=split[-1]),
+                )
+
+        original, refined = outputs(area_heads=2, area_aggregation=True)
+        torch.testing.assert_close(refined[:cells], original)
+        torch.testing.assert_close(refined[cells:], original[:1].expand(copies - 1, 1))
+        # Count-weighted reads and sums see the refinement, so the test is sensitive.
+        original, refined = outputs()
+        self.assertFalse(torch.allclose(refined[:cells], original, atol=1e-4))
+
+    def test_mixed_area_heads_bias_only_integral_heads(self):
+        attention = models.LatentGlobalAttention(
+            8, num_tokens=3, num_heads=4, area_heads=2
+        )
+        bias = attention._read_bias(torch.tensor([1.0, 10.0, 100.0]))
+        self.assertEqual(bias.shape, (4, 3, 3))
+        self.assertTrue(torch.all(bias[2:] == 0))
+        torch.testing.assert_close(bias[0], bias[1])
+        torch.testing.assert_close(
+            bias[0, 0, 1] - bias[0, 0, 0], torch.log(torch.tensor(10.0))
+        )
+        plain = models.LatentGlobalAttention(8, num_tokens=3, num_heads=4)
+        self.assertEqual(list(plain.state_dict()), list(attention.state_dict()))
+
+    def test_area_options_require_areas_and_round_trip_checkpoints(self):
+        model = models.Milestone1_GNN(
+            geom_dim=5, hidden_dim=8, num_layers=1, out_dim=1, edge_dim=4,
+            use_global=True, attention_tokens=4, attention_heads=2, area_heads=1,
+            area_aggregation=True,
+        )  # fmt: skip
+        geom, params = torch.randn(2, 5), torch.randn(2, 3)
+        edges = torch.tensor([[0, 1], [1, 0]])
+        with self.assertRaises(ValueError):
+            model(geom, params, edges, torch.randn(2, 4))
+        with self.assertRaises(ValueError):
+            models.Milestone1_GNN(hidden_dim=8, area_heads=1)
+        data = training.prepare_data(
+            [make_graph(), make_graph("Design_2", 4)], "geometry"
+        )
+        scalers = training.fit_scalers(data)
+        item = training.normalize_data(data, scalers)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "area.pt"
+            training.save_checkpoint(model, scalers, path)
+            restored, _, _ = training.load_checkpoint(path, torch.device("cpu"))
+        self.assertEqual((restored.area_heads, restored.area_aggregation), (1, True))
+        torch.testing.assert_close(
+            training.predict_pressure(
+                model.eval(), item, scalers[2], torch.device("cpu")
+            ),
+            training.predict_pressure(restored, item, scalers[2], torch.device("cpu")),
         )
 
     def test_loss_comparison_saves_shared_scale_image_with_panel_metrics(self):

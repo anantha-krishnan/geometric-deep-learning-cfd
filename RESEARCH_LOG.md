@@ -450,6 +450,11 @@ Reference row: the current Transolver implementation (`benchmarks/transolver`). 
 | Two-scale latent-attention GNN (reference) | 2.374 | 8.223 | n/m | n/m | n/m |
 | Non-invariant latent-attention GNN (reference) | 3.316 | 10.868 | n/m | n/m | n/m |
 | Latent-attention GNN, geometry inputs (GPU rerun) | 2.412 | 6.843 | n/m | n/m | n/m |
+| Latent GNN, 400-epoch annealed schedule (2026-11-24) | 4.150 | 10.224 | n/m | n/m | n/m |
+| Latent GNN + area-weighted read, 2/4 heads, 400-epoch schedule | 2.877 | 10.356 | n/m | n/m | n/m |
+| Latent GNN + area read + area aggregation/graph mean, 400-epoch schedule | 3.093 | 10.516 | n/m | n/m | n/m |
+| Latent GNN + area-weighted read, T_max 1,000 early stop | 4.933 | 12.222 | n/m | n/m | n/m |
+| Latent GNN + area read + aggregation, T_max 1,000 early stop | 3.210 | 10.504 | n/m | n/m | n/m |
 
 - n/m = not measured yet. Measurement rules for future rows: CD error from predicted pressure integrated over the body against the logged `Cd`; until wall shear is exported this is pressure drag only and must be labelled as such. Memory = peak training memory per design (state CPU RSS or GPU peak allocated). Inference time = mean forward time per design after warm-up, with hardware and thread count recorded. Backfill these three columns for existing rows before claiming any efficiency advantage.
 
@@ -499,3 +504,60 @@ Reference row: the current Transolver implementation (`benchmarks/transolver`). 
 - Separate retrospective relative-L2 calculation: average each case's unstandardised `||p-p_hat||_2 / ||p||_2` over cases, separately for volume and surface: reference 0.6001/0.4983, GNN 0.4351/0.2774. Relative L2 over the vector of all 40 lift coefficients is 0.4789/0.2151. The published paper describes relative L2, while its released evaluation code computes field MSE; this aggregation is explicitly defined here and is not established to reproduce the published table. Saved NPZs only include pressure, so velocity, viscosity and a full force-metric recomputation require renewed inference.
 - Images with shared CFD/model pressure and error scales: [high-angle outlier](volume_results/airfrans_reduced_20261122/gnn_reference_analysis_20261123/airFoil2D_SST_90.415_14.684_4.356_6.209_11.299_cfd_reference_gnn.png), [another held-out case](volume_results/airfrans_reduced_20261122/gnn_reference_analysis_20261123/airFoil2D_SST_67.783_-2.041_4.431_3.865_18.25_cfd_reference_gnn.png), and [GNN surface-error regression](volume_results/airfrans_reduced_20261122/gnn_reference_analysis_20261123/airFoil2D_SST_85.752_6.341_0.382_6.715_8.448_cfd_reference_gnn.png). Error colours clip at the 99th percentile in the plotted near-airfoil region.
 - Hypotheses, not demonstrated causes: local mesh messages plus global tokens, or the smaller model's capacity, could improve reduced-data generalisation. On one sampled high-angle mesh, 42.2% of the 32,000 sampled nodes had no retained mesh neighbour, so graph propagation alone cannot be assumed responsible. Repeat seeds, evaluate validation-selected checkpoints for both models, run graph/attention and capacity ablations, and retain all four predicted fields before promoting a model or claiming an architectural cause. The reduced subset is not directly comparable with the paper's larger-data results.
+
+## 2026-11-24 - Area-Weighted Latent Attention and Message Passing: Implementation and Protocol
+
+### Rationale (physics)
+
+- Incompressible pressure solves a Poisson problem, so p(x) = integral of G(x, y) s(y) dA(y) over the domain. Global mixing should therefore approximate an area integral. The existing cell-to-token read is softmax over cells with one vote per cell, so it approximates the integral of (w v rho_mesh) dA, where rho_mesh is cell density. Near-wall cells are 67.6% of cells but 1.73% of area, so tokens mostly summarise the boundary layer and change when the mesh is refined. The count-based graph mean in every message-passing block has the same bias.
+- Adding log A_i to a read key gives softmax(s_i + log A_i), proportional to A_i exp(s_i): a quadrature of an integral over the area. Refinement then leaves the read unchanged. The token-to-cell write and token self-attention involve no cell measure and are unchanged.
+- Hypothesis only: discretisation-consistent global mixing improves generalisation across designs with different mesh grading. It has not been measured.
+
+### Decisions
+
+- Mixed heads, not pure area weighting. Of the four read heads, two have beta = 1 (integral heads, bias log A) and two have beta = 0 (cell-count heads, current behaviour). Pure area weighting would make tokens need logit differences of order log(A_far / A_wall) to resolve the near-wall band, which risks starving the region we care most about. beta is fixed, not learned, so the effect is interpretable; a learnable beta is deferred.
+- Message passing, option (a): neighbour-area quadrature, sum_j A_j m_ji / sum_j A_j, replacing the sum. In the neighbour-attention path the same option adds log A_j to the edge scores. Option (c): the graph-mean context becomes an area-weighted mean. Both are controlled by one flag, `area_aggregation`. Caveat: (a) turns a sum into a weighted mean, so node-degree information, including whether a cell touches a boundary, is lost; wall distance remains an input.
+- Deferred, option (b): finite-volume-style face-length weights l_f / d_ij. Face lengths are available in the loader (interior face vertices) but are not stored.
+- Areas are the physical cell areas `geom[:, 3]`. Their units do not matter: softmax is shift-invariant in log A, and the weighted means are ratios.
+- New options are off by default. State-dictionary keys and parameter count (92,097) are unchanged, and old checkpoints load with the options off. New checkpoints record `area_heads` and `area_aggregation`.
+- Learning rate: added `--schedule-epochs`. It decays with a cosine to 1% of the initial rate over that length, then holds the minimum (PyTorch's `CosineAnnealingLR` would rise again). Without the option, the old schedule (T_max = max epochs) is used unchanged, so earlier runs stay reproducible.
+
+### Verification
+
+- Exact discretisation test: split one cell into three copies with A/3 each, duplicating its faces. With all heads area-weighted and area aggregation on, every original cell's output and each copy's output match the unrefined graph. The count-weighted model changes under the same refinement, so the test is sensitive. Also tested: head biases, the requirement for areas, checkpoint round trips, parameter-count equality, and the schedule holding its minimum. 73 tests pass; Ruff and ty pass on changed files. A two-epoch real-data GPU smoke run completed; its artifacts were deleted and it is not accuracy evidence.
+
+### Protocol
+
+- Same stratified fold-2 split as the 2026-11-22 GPU runs: 19 inner-training designs, inner validation Design_5/9/17/19/20, six previously inspected outer designs. Seed 2026, geometry inputs, 0.05 m near-body-balanced loss, CUDA.
+- 400 epochs with a 400-epoch schedule, so every run anneals fully. Early stopping is disabled (minimum epochs = 400); the best inner-validation checkpoint is selected every 10 epochs.
+- Three sequential arms with identical settings: `latent_attention32` (matched baseline under the new schedule; the earlier GPU row used T_max = 1,000, so it is not a matched control), `latent_attention32_area_read` (area-weighted read only), and `latent_attention32_area` (read + (a) + (c)). This separates the schedule effect from the attention effect and the read effect from the aggregation effect.
+- Command: `uv run python -u compare_volume_architectures.py --design Design_1 --stratify-inner --architectures latent_attention32 latent_attention32_area_read latent_attention32_area --max-epochs 400 --schedule-epochs 400 --minimum-epochs 400 --validation-interval 10 --patience 8 --results-dir volume_results/area_weighted_20261124 --comparison-dir volume_results/gpu_latent_attention_geometry_20261122/latent_attention32 --comparison-label "Latent attention (GPU, T_max=1000)"`.
+- Status: started; results pending.
+
+## 2026-11-24 - Area-Weighted Latent Attention: Results (Mixed, Dominated by Training Variance)
+
+Both protocols use the stratified fold-2 split, seed 2026, geometry inputs and CUDA. The baseline row is the 2026-11-22 GPU run, not rerun under the T_max = 1,000 protocol.
+
+| Model | Schedule | Best epoch | Best inner val. loss | Mean RMSE [Pa] | Worst RMSE [Pa] | Near-wall 0.05 m [Pa] | Pooled R-squared |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| latent_attention32 (2026-11-22 GPU) | T_max 1,000, early stop (650) | 570 | 0.00394 | 2.412 | 3.286 | 6.843 | 0.9730 |
+| latent_attention32 | 400, annealed, no early stop | 170 | 0.00643 | 4.150 | 6.968 | 10.224 | 0.9151 |
+| latent_attention32_area_read | 400, annealed, no early stop | 230 | 0.00352 | 2.877 | 5.278 | 10.356 | 0.9579 |
+| latent_attention32_area | 400, annealed, no early stop | 350 | 0.00473 | 3.093 | 4.170 | 10.516 | 0.9554 |
+| latent_attention32_area_read | T_max 1,000, early stop | 110 | 0.00581 | 4.933 | 6.392 | 12.222 | 0.8899 |
+| latent_attention32_area | T_max 1,000, early stop | 150 | 0.00623 | 3.210 | 4.854 | 10.504 | 0.9516 |
+
+- **Learning-rate fix not supported.** With the full 400-epoch anneal, the matched baseline overfits: training loss 0.00048 against inner-validation 0.0077 at epoch 400; best checkpoint at 170. Its held-out mean RMSE (4.15 Pa) is much worse than the unannealed T_max = 1,000 GPU run (2.41 Pa). The earlier "unannealed learning rate" confound may have acted as regularisation. This is one seed; the 400-epoch length is the only tested anneal.
+- **Within the 400-epoch protocol**, both area arms beat the matched baseline on mean whole-domain RMSE: area read 4.15 -> 2.88 Pa, better on 5/6 designs; full area 3.09 Pa with the lowest worst-design RMSE of the three, 4.17 Pa. Area read also had the lowest inner-validation loss of any latent run so far (0.00352). Mean near-wall RMSE was unchanged (10.2-10.5 Pa). On the small-body extrapolation design Design_14, area read doubled the near-wall error (13.75 -> 25.55 Pa); see [Design_14 area read](volume_results/area_weighted_20261124/latent_attention32_area_read/Design_14_comparison.png). The stagnation peak is underpredicted and the suction region is distorted. Full area (18.45 Pa) also underpredicts the peak but keeps the suction-region shape: [Design_14 full area](volume_results/area_weighted_20261124/latent_attention32_area/Design_14_comparison.png).
+- **Under the T_max = 1,000 early-stopping protocol**, both area arms stopped early (best epochs 110 and 150, against 570 for the baseline) and are worse than the baseline on every metric. Validation and training losses are noisy: for example, a training-loss spike to 0.016 at epoch 200 in the full-area arm. Patience-based stopping then selects whichever noisy minimum came first.
+- **Interpretation:** no area-weighted arm beats the best existing latent run (2.41 / 6.84 Pa), and no claim of improvement is made. Run-to-run differences of a factor of about 2 in mean RMSE come from the schedule and stopping rule alone. This is larger than any area effect, so single-seed comparisons cannot resolve the hypothesis. The near-wall band was never helped: the cell-count heads did not protect it, and the integral heads may hurt small bodies.
+- Artifacts: `volume_results/area_weighted_20261124/` (400-epoch arms) and `volume_results/area_weighted_tmax1000_20261124/`. Each architecture directory contains a checkpoint, metrics, validation curve, NPZ predictions and six CFD / GPU-baseline / new-model comparison PNGs on shared pressure scales.
+- Next, before any further architecture change: (1) at least three seeds for baseline and area read under one fixed protocol; (2) reduce optimisation noise, for example gradient clipping, a validation-loss moving average for selection, or a longer patience; (3) only then a learnable beta or option (b) face-length weights. Do not promote any area variant.
+- Follow-up decision (same day): the `--schedule-epochs` option and `cosine_schedule()` helper were removed, because the annealed schedule was not useful. All runs return to the original `CosineAnnealingLR` with T_max = max epochs and patience-based early stopping. The 400-epoch artifacts are kept as negative evidence but can no longer be reproduced with the current CLI (they used the removed option with 400 schedule epochs).
+
+## 2026-11-24 - Area-Weighted GNN on AirfRANS: Implementation (Kaggle Run Pending)
+
+- AirfRANS fields are vertex (point) data on planar VTK quads, so cell areas are converted to lumped nodal areas: each quad's shoelace area is shared equally among its vertices. On one real case the nodal areas sum exactly to the mesh area (19.2378); the smallest is 6e-12 and none are zero. Surface nodes are 0.56% of nodes but only 1.1e-7 of the area. The two integral heads therefore effectively ignore the airfoil surface; the two cell-count heads still see it. The surface-pressure metric may expose this.
+- Random 32,000-node sampling is uniform over nodes. Area weights over a uniform subset give an unbiased quadrature up to a constant, which cancels in the softmax and weighted means. Area-weighted reads should therefore be consistent between training subsets and the multi-pass full-mesh inference. This is a design argument, not a measurement. Isolated sampled nodes (about 42%) still receive no neighbour messages.
+- New `BenchmarkModel` kinds: `gnn_area_read` (2/4 area read heads) and `gnn_area` (also area-weighted aggregation and graph mean). Otherwise they are identical to the 398-epoch `gnn` run: width 32, 3 layers, 32 tokens, 4 heads, 91,780 parameters, Adam + OneCycleLR, 32,000 points, seed 2026, 96/16/40 split. As before, the evaluated checkpoint is the final epoch, not a validation-selected one.
+- Kaggle: re-upload the code dataset including `model.py` and `benchmarks/`, then run the new notebook cell in `gdl-transolver.ipynb` (`--models gnn_area_read gnn_area --epochs 398`). Results pending; compare against `volume_results/airfrans_reduced_20261122/kaggle_gnn_latentattention32_398epoch/`.

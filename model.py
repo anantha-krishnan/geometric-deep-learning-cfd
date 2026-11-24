@@ -14,10 +14,12 @@ class MessagePassingBlock(nn.Module):
         use_global=False,
         attention_heads=0,
         activation="default",
+        area_aggregation=False,
     ):
         super().__init__()
         self.use_global = use_global
         self.attention_heads = attention_heads
+        self.area_aggregation = area_aggregation
         if attention_heads and hidden_dim % attention_heads:
             raise ValueError(
                 "Hidden width must be divisible by neighbor-attention heads."
@@ -42,16 +44,23 @@ class MessagePassingBlock(nn.Module):
                 nn.Linear(hidden_dim, attention_heads),
             )
 
-    def forward(self, h, edge_index, edge_attr=None, batch_idx=None):
+    def forward(self, h, edge_index, edge_attr=None, batch_idx=None, areas=None):
         src, dst = edge_index[0], edge_index[1]
+        node_weights = None
+        if self.area_aggregation:
+            if areas is None:
+                raise ValueError("Area-weighted aggregation requires cell areas.")
+            node_weights = areas.to(h.dtype)
 
         # 1. Message computed across face neighbors
         parts = [h[src], h[dst]] + ([edge_attr] if edge_attr is not None else [])
         msg = self.edge_mlp(torch.cat(parts, dim=-1))
 
-        # 2. Aggregate either by sum or normalized edge-aware attention.
+        # 2. Aggregate by sum, area quadrature, or normalized edge-aware attention.
         if self.attention_heads:
             scores = self.message_attention(torch.cat(parts, dim=-1))
+            if node_weights is not None:
+                scores = scores + node_weights.clamp_min(1e-30).log()[src].unsqueeze(1)
             indices = dst.unsqueeze(1).expand(-1, self.attention_heads)
             maxima = h.new_full((h.size(0), self.attention_heads), -torch.inf)
             maxima.scatter_reduce_(0, indices, scores, reduce="amax", include_self=True)
@@ -67,6 +76,12 @@ class MessagePassingBlock(nn.Module):
             )
             aggr_heads.index_add_(0, dst, weights.unsqueeze(-1) * values)
             aggr = aggr_heads.reshape_as(h)
+        elif node_weights is not None:
+            # Neighbour-area quadrature: sum_j A_j m_ji / sum_j A_j.
+            weights = node_weights[src]
+            aggr = torch.zeros_like(h).index_add_(0, dst, weights.unsqueeze(1) * msg)
+            total = h.new_zeros(h.size(0)).index_add_(0, dst, weights)
+            aggr = aggr / total.clamp_min(1e-30).unsqueeze(1)
         else:
             aggr = torch.zeros_like(h)
             aggr.index_add_(0, dst, msg)
@@ -74,29 +89,50 @@ class MessagePassingBlock(nn.Module):
         # 3. State update with residual connection
         node_in = [h, aggr]
         if self.use_global:
-            node_in.append(_graph_mean(h, batch_idx)[batch_idx])
+            node_in.append(_graph_mean(h, batch_idx, node_weights)[batch_idx])
         h_next = h + self.node_mlp(torch.cat(node_in, dim=-1))
         return h_next
 
 
-def _graph_mean(h, batch_idx):
+def _graph_mean(h, batch_idx, weights=None):
+    """Per-graph mean of node states, area-weighted when ``weights`` is given."""
     num_graphs = int(batch_idx.max().item()) + 1
-    sums = h.new_zeros(num_graphs, h.size(1)).index_add_(0, batch_idx, h)
-    counts = h.new_zeros(num_graphs).index_add_(
-        0, batch_idx, torch.ones_like(batch_idx, dtype=h.dtype)
+    if weights is None:
+        weights = torch.ones_like(batch_idx, dtype=h.dtype)
+    weights = weights.to(h.dtype)
+    sums = h.new_zeros(num_graphs, h.size(1)).index_add_(
+        0, batch_idx, weights.unsqueeze(1) * h
     )
-    return sums / counts.unsqueeze(1)
+    totals = h.new_zeros(num_graphs).index_add_(0, batch_idx, weights)
+    return sums / totals.clamp_min(1e-30).unsqueeze(1)
 
 
 class LatentGlobalAttention(nn.Module):
-    """Exchange global information through a small, graph-isolated token set."""
+    """Exchange global information through a small, graph-isolated token set.
 
-    def __init__(self, hidden_dim, num_tokens=32, num_heads=4, activation="default"):
+    The first ``area_heads`` heads read cells with a log-area key bias, so their token
+    pool is a quadrature of a field integral; the remaining heads weight cells equally.
+    """
+
+    def __init__(
+        self,
+        hidden_dim,
+        num_tokens=32,
+        num_heads=4,
+        activation="default",
+        area_heads=0,
+    ):
         super().__init__()
         if num_tokens < 1 or num_heads < 1 or hidden_dim % num_heads:
             raise ValueError(
                 "Positive token/head counts and a head-divisible hidden width are required."
             )
+        if not 0 <= area_heads <= num_heads:
+            raise ValueError(
+                "Area-weighted heads must be between 0 and the head count."
+            )
+        self.area_heads = area_heads
+        self.num_heads = num_heads
         self.tokens = nn.Parameter(torch.randn(1, num_tokens, hidden_dim) * 0.02)
         self.cell_norm = nn.LayerNorm(hidden_dim)
         self.token_norm = nn.LayerNorm(hidden_dim)
@@ -122,14 +158,31 @@ class LatentGlobalAttention(nn.Module):
             nn.Linear(hidden_dim * 2, hidden_dim),
         )
 
-    def _attend_graph(self, cells):
+    def _read_bias(self, areas):
+        """Per-head additive key bias beta_h * log(A), shape [heads, tokens, cells]."""
+        log_area = areas.clamp_min(1e-30).log()
+        log_area = log_area - log_area.mean()
+        beta = (torch.arange(self.num_heads, device=areas.device) < self.area_heads).to(
+            log_area.dtype
+        )
+        bias = beta[:, None] * log_area[None, :]
+        return (
+            bias.unsqueeze(1)
+            .expand(-1, self.tokens.size(1), -1)
+            .to(self.tokens.dtype)
+            .contiguous()
+        )
+
+    def _attend_graph(self, cells, areas=None):
         normalized = self.cell_norm(cells).unsqueeze(0)
+        bias = self._read_bias(areas) if self.area_heads else None
         tokens = (
             self.tokens
             + self.read_attention(
                 self.token_norm(self.tokens),
                 normalized,
                 normalized,
+                attn_mask=bias,
                 need_weights=False,
             )[0]
         )
@@ -154,11 +207,14 @@ class LatentGlobalAttention(nn.Module):
         cells = cells + updates
         return cells + self.cell_ffn(cells)
 
-    def forward(self, cells, batch_idx):
+    def forward(self, cells, batch_idx, areas=None):
+        if self.area_heads and areas is None:
+            raise ValueError("Area-weighted attention heads require cell areas.")
         output = torch.zeros_like(cells)
         for graph_id in torch.unique(batch_idx):
             mask = batch_idx == graph_id
-            output[mask] = self._attend_graph(cells[mask])
+            graph_areas = areas[mask] if areas is not None and self.area_heads else None
+            output[mask] = self._attend_graph(cells[mask], graph_areas)
         return output
 
 
@@ -176,11 +232,17 @@ class Milestone1_GNN(nn.Module):
         attention_heads=4,
         message_attention_heads=0,
         activation="default",
+        area_heads=0,
+        area_aggregation=False,
     ):
         super().__init__()
         if activation not in ("default", "tanh"):
             raise ValueError(f"Unsupported activation: {activation}")
+        if area_heads and not attention_tokens:
+            raise ValueError("Area-weighted heads require latent attention tokens.")
         self.activation = activation
+        self.area_heads = area_heads
+        self.area_aggregation = area_aggregation
         if attention_tokens < 0:
             raise ValueError("Attention token count cannot be negative.")
         self.attention_tokens = attention_tokens
@@ -201,6 +263,7 @@ class Milestone1_GNN(nn.Module):
                     use_global,
                     message_attention_heads,
                     activation,
+                    area_aggregation,
                 )
                 for _ in range(num_layers)
             ]
@@ -215,7 +278,11 @@ class Milestone1_GNN(nn.Module):
         self.attention_layers = nn.ModuleList(
             [
                 LatentGlobalAttention(
-                    hidden_dim, attention_tokens, attention_heads, activation
+                    hidden_dim,
+                    attention_tokens,
+                    attention_heads,
+                    activation,
+                    area_heads,
                 )
                 for _ in range(num_layers)
             ]
@@ -223,13 +290,16 @@ class Milestone1_GNN(nn.Module):
             else []
         )
 
-    def forward(self, geom, params, edge_index, edge_attr=None, batch_idx=None):
+    def forward(
+        self, geom, params, edge_index, edge_attr=None, batch_idx=None, areas=None
+    ):
+        """``areas`` are physical cell measures, required by the area-weighted options."""
         x = torch.cat([geom, params], dim=-1)
         h = self.encoder(x)
         if batch_idx is None:
             batch_idx = torch.zeros(h.size(0), dtype=torch.long, device=h.device)
         for index, layer in enumerate(self.layers):
-            h = layer(h, edge_index, edge_attr, batch_idx)
+            h = layer(h, edge_index, edge_attr, batch_idx, areas)
             if self.attention_tokens:
-                h = self.attention_layers[index](h, batch_idx)
+                h = self.attention_layers[index](h, batch_idx, areas)
         return self.decoder(h)

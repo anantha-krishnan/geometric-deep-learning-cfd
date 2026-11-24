@@ -177,6 +177,8 @@ def create_model(
     num_layers=NUM_LAYERS,
     activation="default",
     design_dim=3,
+    area_heads=0,
+    area_aggregation=False,
 ):
     return Milestone1_GNN(
         geom_dim=geom_dim,
@@ -190,6 +192,8 @@ def create_model(
         attention_heads=attention_heads,
         message_attention_heads=message_attention_heads,
         activation=activation,
+        area_heads=area_heads,
+        area_aggregation=area_aggregation,
     ).to(device)
 
 
@@ -256,7 +260,9 @@ def train_model(
 
             optimizer.zero_grad()
             edge_attr = batch["edge_attr"].to(device) if "edge_attr" in batch else None
-            prediction = model(geom, params, edge_index, edge_attr, batch_idx=batch_idx)
+            prediction = model(
+                geom, params, edge_index, edge_attr, batch_idx=batch_idx, areas=areas
+            )
             if loss_mode == "near-body":
                 distance, threshold = near_wall_distance(batch)
                 loss = near_body_weighted_mse(
@@ -296,7 +302,13 @@ def predict_pressure(model, item, pressure_scaler, device):
     geom = item["geom_norm"].to(device)
     params = item["params_norm"].to(device).unsqueeze(0).expand(geom.size(0), -1)
     edge_attr = item["edge_attr"].to(device) if "edge_attr" in item else None
-    prediction = model(geom, params, item["edge_index"].to(device), edge_attr)
+    prediction = model(
+        geom,
+        params,
+        item["edge_index"].to(device),
+        edge_attr,
+        areas=item["geom"][:, 3].to(device),
+    )
     target = pressure_scaler.inverse_transform(prediction.cpu())
     return target * item.get("pressure_scale", 1.0) + item.get(
         "pressure_reference", 0.0
@@ -496,6 +508,8 @@ def save_checkpoint(model, scalers, path, run_config=None):
                 "attention_heads": model.attention_heads,
                 "message_attention_heads": model.message_attention_heads,
                 "activation": model.activation,
+                "area_heads": model.area_heads,
+                "area_aggregation": model.area_aggregation,
             },
             "format_version": 2,
             "run_config": run_config or {"variant": "baseline"},

@@ -927,6 +927,11 @@ Transolver (GPU rerun) & \textbf{1.11} & \textbf{2.02} & n/m & n/m & n/m \\
 Two-scale latent GNN & 2.37 & 8.22 & n/m & n/m & n/m \\
 Latent GNN (geometry) & 3.32 & 10.87 & n/m & n/m & n/m \\
 Latent GNN (geometry, GPU) & 2.41 & 6.84 & n/m & n/m & n/m \\
+Latent GNN, 400-ep.\ anneal & 4.15 & 10.22 & n/m & n/m & n/m \\
+\quad + area read (400 ep.) & 2.88 & 10.36 & n/m & n/m & n/m \\
+\quad + area read/aggr.\ (400 ep.) & 3.09 & 10.52 & n/m & n/m & n/m \\
+\quad + area read ($T_\mathrm{max}{=}1000$) & 4.93 & 12.22 & n/m & n/m & n/m \\
+\quad + area read/aggr.\ ($T_\mathrm{max}{=}1000$) & 3.21 & 10.50 & n/m & n/m & n/m \\
 \bottomrule
 \end{tabular}
 \\[2pt]
@@ -959,6 +964,23 @@ higher than the GPU Transolver run. Different checkpoints and PyTorch builds
 confound this single-run comparison. A common-scale comparison with actual CFD,
 the CPU latent model and GPU Transolver is saved as
 \texttt{volume\_results/gpu\_latent\_attention\_geometry\_20261122/latent\_attention32/Design\_1\_benchmark\_comparison.png}.
+
+\textbf{Area-weighted latent attention (exploratory).} Because pressure solves
+a Poisson problem, global mixing should approximate an area integral, whereas
+the cell$\to$token read weights every cell equally and so over-represents the
+refined near-wall mesh (67.6\,\% of cells, 1.73\,\% of area). We added a key
+bias $\beta_h\log A_i$ to two of four read heads ($\beta{=}1$; the other two
+keep $\beta{=}0$), and optionally replaced sum aggregation and the graph mean by
+area-weighted means. Refining a cell into $k$ copies of area $A/k$ then leaves
+the output exactly unchanged (verified by a unit test). Empirically the evidence
+is inconclusive. Under a fully annealed 400-epoch schedule the area-weighted read
+reduced mean RMSE from 4.15 to 2.88\,Pa against its matched baseline, but
+near-wall error was unchanged and doubled on the small-body design Design\_14.
+The annealed baseline itself overfitted and was much worse than the unannealed
+$T_\mathrm{max}{=}1000$ run (2.41\,Pa). Under that protocol both area variants
+stopped early on noisy validation minima and were worse. Schedule and stopping
+effects (about $2\times$) exceed any area effect, so multi-seed runs are required
+before any conclusion.
 
 \textbf{Decision.} Pure message-passing GNNs are retained only as references.
 Further work improves Transolver one change at a time: two-scale inputs,

@@ -12,6 +12,7 @@ from benchmarks.airfrans.data import (
     fit_normalization,
     induced_subgraph,
     normalize_case,
+    vertex_dual_areas,
 )
 from benchmarks.airfrans.evaluate import summarize
 from benchmarks.airfrans.evaluation import predict_full, pressure_scores
@@ -128,6 +129,15 @@ class AirfransDataTests(unittest.TestCase):
         }
         self.assertEqual(actual, expected)
 
+    def test_vertex_areas_share_each_cell_equally_and_sum_to_mesh_area(self):
+        points = np.array([[0, 0], [2, 0], [2, 1], [0, 1], [3, 0]], dtype=float)
+        areas = vertex_dual_areas(points, np.array([4, 0, 1, 2, 3, 3, 1, 4, 2]))
+        third = 0.5 / 3
+        np.testing.assert_allclose(
+            areas, [0.5, 0.5 + third, 0.5 + third, 0.5, third], rtol=1e-6
+        )
+        self.assertAlmostEqual(float(areas.sum()), 2.5, places=5)
+
     def test_induced_subgraph_remaps_only_edges_between_sampled_nodes(self):
         edge_index = torch.tensor([[0, 1, 1, 2, 2, 3], [1, 0, 2, 1, 3, 2]])
         sampled = induced_subgraph(edge_index, np.array([3, 1, 2]), num_nodes=4)
@@ -178,13 +188,43 @@ class AirfransTrainingTests(unittest.TestCase):
             "y": np.zeros((4, 4), dtype=np.float32),
             "surface": np.array([True, True, False, False]),
             "edge_index": edge_index,
+            "areas": np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32),
         }
         sample = sample_case(
-            case, 2, np.random.default_rng(1), torch.device("cpu"), include_edges=True
+            case,
+            2,
+            np.random.default_rng(1),
+            torch.device("cpu"),
+            include_edges=True,
+            include_areas=True,
         )
-        self.assertEqual(len(sample), 5)
+        self.assertEqual(len(sample), 6)
         self.assertEqual(tuple(sample[4].shape), (2, 2))
         self.assertLess(int(sample[4].max()), 2)
+        self.assertEqual(tuple(sample[5].shape), (2,))
+
+    def test_area_gnn_kinds_configure_area_options(self):
+        for kind, expected in (
+            ("gnn", (0, False, False)),
+            ("gnn_area_read", (2, False, True)),
+            ("gnn_area", (2, True, True)),
+        ):
+            with self.subTest(kind=kind):
+                model = BenchmarkModel(kind)
+                self.assertEqual(
+                    (
+                        model.model.area_heads,
+                        model.model.area_aggregation,
+                        model.uses_areas,
+                    ),
+                    expected,
+                )
+        model = BenchmarkModel("gnn_area")
+        edges = torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]])
+        predictions = model(torch.randn(3, 7), torch.randn(3, 2), edges, torch.ones(3))
+        self.assertEqual(tuple(predictions.shape), (3, 4))
+        with self.assertRaises(ValueError):
+            model(torch.randn(3, 7), torch.randn(3, 2), edges)
 
     def test_latent_attention_gnn_maps_airfrans_features_to_four_fields(self):
         model = BenchmarkModel("gnn")
@@ -248,10 +288,13 @@ class AirfransEvaluationTests(unittest.TestCase):
     def test_gnn_inference_passes_induced_edges_to_the_model(self):
         class DummyGraphModel(torch.nn.Module):
             kind = "gnn"
+            uses_graph = True
+            uses_areas = True
 
-            def forward(self, inputs, positions, edge_index):
+            def forward(self, inputs, positions, edge_index, areas):
                 assert edge_index.shape[0] == 2
                 assert edge_index.numel() > 0
+                assert areas.shape == (len(inputs),)
                 return torch.ones((len(inputs), 4), device=inputs.device)
 
         case = {
@@ -261,6 +304,7 @@ class AirfransEvaluationTests(unittest.TestCase):
             "edge_index": torch.tensor(
                 [[0, 1, 1, 2, 2, 3, 3, 4, 4, 5], [1, 0, 2, 1, 3, 2, 4, 3, 5, 4]]
             ),
+            "areas": np.ones(6, dtype=np.float32),
         }
         statistics = {"y_mean": np.zeros(4), "y_std": np.ones(4)}
         predictions, rounds = predict_full(
