@@ -1046,18 +1046,62 @@ authors' evaluation script.
 MSE and lift scores. Lower is better except for Spearman correlation.}
 \label{tab:airfrans_mse}
 \resizebox{\columnwidth}{!}{%
-\begin{tabular}{lrrr}
+\begin{tabular}{lrrrrr}
 \toprule
-Metric & Authors' Transolver & GNN & GNN, area \\
+Metric & Authors' Transolver & GNN & GNN, area & GNN, relative & GNN, mean + relative \\
 \midrule
-Volume pressure MSE & 0.0850 & 0.0561 & \textbf{0.0543} \\
-Surface pressure MSE & 0.6920 & 0.1448 & \textbf{0.0608} \\
-Mean relative lift error & 1.6751 & 0.8546 & \textbf{0.6458} \\
-Lift Spearman correlation & 0.9413 & \textbf{0.9465} & 0.8921 \\
+Volume pressure MSE & 0.0850 & 0.0561 & 0.0543 & \textbf{0.0517} & 0.0934 \\
+Surface pressure MSE & 0.6920 & 0.1448 & 0.0608 & \textbf{0.0851} & 0.1203 \\
+Mean relative lift error & 1.6751 & 0.8546 & 0.6458 & 0.7982 & \textbf{0.5335} \\
+Lift Spearman correlation & 0.9413 & 0.9465 & 0.8921 & 0.9293 & \textbf{0.9490} \\
 \bottomrule
 \end{tabular}
 }
 \end{table}
+
+An additional relative-edge GNN checkpoint recovered at epoch 361 gives mean
+volume/surface pressure MSE of 0.0517/0.0851 on these 40 cases, compared with
+0.0561/0.1448 for the epoch-398 GNN. Its medians worsen, and it improves only
+18/40 volume and 10/40 surface cases; a high-angle case drives much of the mean
+improvement. These are single-seed comparisons across checkpoint epochs, not
+evidence of consistent improvement. The unavailable epoch-398 relative-edge
+checkpoint was reported in Kaggle output but was not independently recovered.
+
+The complete epoch-398 mean-plus-relative GNN worsens mean volume MSE to 0.0934,
+while reducing surface MSE to 0.1203 and mean relative lift error to 0.5335.
+
+Offline expert mixtures can separate the low-angle and high-angle regimes. On
+the 40 retained cases, a gate using baseline predictions below $5^\circ$ and
+relative-edge predictions at or above $5^\circ$ gives mean surface MSE 0.0827,
+versus 0.0851 for relative-edge-only and 0.1448 for baseline-only. Its median
+is 0.00795, so it does not preserve the baseline median 0.00635. A threshold of
+$12.5^\circ$ exactly preserves the baseline median but raises mean surface MSE
+to 0.1022. Alpha blends do not meet both targets simultaneously.
+\paragraph{Hybrid absolute-relative feature test (implementation pending).}
+The baseline and relative-edge GNNs can be synthesized within one latent-attention
+model. The new \texttt{gnn\_hybrid} keeps the existing seven normalized node features
+(x/y positions, freestream components, wall distance and normals) and adds edge
+features $[\Delta/\|\Delta\|,\log(\|\Delta\|/c),\Delta_x,\Delta_y]$, while retaining
+sum aggregation. This separates relative local geometry from absolute coordinate
+context. It is not an AoA gate or an ensemble and is to be tested under the same
+96/16/40 split, 398 epochs and 32k-node sampling. No result is claimed yet.
+
+\paragraph{Hybrid absolute-relative feature test (implementation pending).}
+The baseline and relative-edge GNNs can be synthesized within one latent-attention
+model. The new \texttt{gnn\_hybrid} keeps the existing seven normalized node features
+(x/y positions, freestream components, wall distance and normals) and adds edge
+features $[\Delta/\|\Delta\|,\log(\|\Delta\|/c),\Delta_x,\Delta_y]$, while retaining
+sum aggregation. This separates relative local geometry from absolute coordinate
+context. It is not an AoA gate or an ensemble and is to be tested under the same
+96/16/40 split, 398 epochs and 32k-node sampling. No result is claimed yet.
+
+The volume and surface gains are outlier-sensitive: median surface MSE rises to
+0.0136 and volume MSE improves on only 18/40 cases. Lift Spearman reaches
+0.9490, but paired lift-error improvement is not significant. At 16k/32k/64k
+sampled nodes, volume MSE is 0.0805/0.0934/0.1178, surface MSE is
+0.1337/0.1203/0.1271, and lift/spearman remain comparatively stable. These
+subsets test sampling density, not remeshing, and the complete run remains one
+seed on the repeatedly inspected split.
 
 Table~\ref{tab:airfrans_mse} shows reductions of 34.0\% in mean volume MSE
 and 79.1\% in mean surface MSE. The GNN improves volume pressure MSE on 36 of

@@ -51,7 +51,7 @@ def plot_case(case, predictions, path):
         "gnn": "Latent-attention GNN",
         "gnn_mean": "GNN, mean aggregation",
         "gnn_rel": "GNN, relative edges",
-        "gnn_mean_rel": "GNN, mean + relative edges",
+        "gnn_hybrid": "GNN, absolute + relative hybrid",
     }
     labels = ["CFD", *[model_names.get(kind, kind.title()) for kind in predictions]]
     fields = [actual, *[values[:, 2] for values in predictions.values()]]

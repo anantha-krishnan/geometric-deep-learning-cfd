@@ -32,12 +32,12 @@ def physics_loss(predictions, targets, surface):
     return squared_error[surface].mean() + squared_error[~surface].mean()
 
 
-# Latent-attention GNN kinds: (neighbour aggregation, relative-distance edge features).
+# Latent-attention GNN kinds: (neighbour aggregation, edge feature mode).
 GNN_KINDS = {
-    "gnn": ("sum", False),
-    "gnn_mean": ("mean", False),
-    "gnn_rel": ("sum", True),
-    "gnn_mean_rel": ("mean", True),
+    "gnn": ("sum", "none"),
+    "gnn_mean": ("mean", "none"),
+    "gnn_rel": ("sum", "relative"),
+    "gnn_hybrid": ("sum", "hybrid"),
 }
 MODEL_KINDS = ("reference", "local", *GNN_KINDS)
 
@@ -49,12 +49,20 @@ def relative_edge_features(positions, edge_index):
     return torch.cat([displacement / distance, distance.log()], dim=1)
 
 
+def hybrid_edge_features(positions, edge_index):
+    """[unit direction, log distance, absolute dx/dy] for one graph."""
+    relative = relative_edge_features(positions, edge_index)
+    displacement = positions[edge_index[1]] - positions[edge_index[0]]
+    return torch.cat([relative, displacement], dim=1)
+
+
 class BenchmarkModel(nn.Module):
     def __init__(self, kind, reference_path=None):
         super().__init__()
         self.kind = kind
         self.uses_graph = kind in GNN_KINDS
-        self.relative_edges = self.uses_graph and GNN_KINDS[kind][1]
+        self.edge_mode = GNN_KINDS[kind][1] if self.uses_graph else "none"
+        self.relative_edges = self.edge_mode in ("relative", "hybrid")
         if kind == "local":
             from benchmarks.transolver.model import Transolver
 
@@ -71,14 +79,15 @@ class BenchmarkModel(nn.Module):
         elif kind in GNN_KINDS:
             from model import Milestone1_GNN
 
-            aggregation, relative_edges = GNN_KINDS[kind]
+            aggregation, edge_mode = GNN_KINDS[kind]
+            edge_dim = {"none": 0, "relative": 3, "hybrid": 5}[edge_mode]
             self.model = Milestone1_GNN(
                 geom_dim=7,
                 design_dim=0,
                 hidden_dim=32,
                 num_layers=3,
                 out_dim=4,
-                edge_dim=3 if relative_edges else 0,
+                edge_dim=edge_dim,
                 use_global=True,
                 attention_tokens=32,
                 attention_heads=4,
@@ -122,11 +131,12 @@ class BenchmarkModel(nn.Module):
                 raise ValueError("The AirfRANS GNN requires mesh edge indices.")
             params = inputs.new_empty((len(inputs), 0))
             batch_idx = torch.zeros(len(inputs), dtype=torch.long, device=inputs.device)
-            edge_attr = (
-                relative_edge_features(positions, edge_index)
-                if self.relative_edges
-                else None
-            )
+            if self.edge_mode == "relative":
+                edge_attr = relative_edge_features(positions, edge_index)
+            elif self.edge_mode == "hybrid":
+                edge_attr = hybrid_edge_features(positions, edge_index)
+            else:
+                edge_attr = None
             return self.model(inputs, params, edge_index, edge_attr, batch_idx)
         inputs = torch.cat((inputs, positional_features(positions)), dim=1)
         return self.model(inputs, inputs.new_empty((len(inputs), 0)))

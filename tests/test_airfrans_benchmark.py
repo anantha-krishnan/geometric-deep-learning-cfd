@@ -20,6 +20,7 @@ from benchmarks.airfrans.splits import build_reduced_splits, parse_case
 from benchmarks.airfrans.train import sample_case
 from benchmarks.airfrans.training import (
     BenchmarkModel,
+    hybrid_edge_features,
     physics_loss,
     positional_features,
     relative_edge_features,
@@ -192,7 +193,7 @@ class AirfransTrainingTests(unittest.TestCase):
             ("gnn", "sum", 0),
             ("gnn_mean", "mean", 0),
             ("gnn_rel", "sum", 3),
-            ("gnn_mean_rel", "mean", 3),
+            ("gnn_hybrid", "sum", 5),
         ):
             with self.subTest(kind=kind):
                 model = BenchmarkModel(kind)
@@ -216,6 +217,29 @@ class AirfransTrainingTests(unittest.TestCase):
         torch.testing.assert_close(
             features, torch.tensor([[0.0, 1.0, float(np.log(0.5))]])
         )
+
+    def test_hybrid_edge_features_add_absolute_displacement_to_relative_features(self):
+        features = hybrid_edge_features(
+            torch.tensor([[0.0, 0.0], [2.0, 0.0]]), torch.tensor([[0], [1]])
+        )
+        torch.testing.assert_close(
+            features,
+            torch.tensor([[1.0, 0.0, float(np.log(2.0)), 2.0, 0.0]]),
+        )
+
+    def test_hybrid_gnn_uses_absolute_nodes_and_five_edge_features(self):
+        model = BenchmarkModel("gnn_hybrid")
+        inputs = torch.randn(6, 7)
+        positions = torch.randn(6, 2)
+        edge_index = torch.tensor([[0, 1, 1, 2, 2, 3], [1, 0, 2, 1, 3, 2]])
+        predictions = model(inputs, positions, edge_index)
+        self.assertEqual(tuple(predictions.shape), (6, 4))
+        self.assertEqual(model.edge_mode, "hybrid")
+        self.assertEqual(
+            model.model.aggregation if hasattr(model.model, "aggregation") else "sum",
+            "sum",
+        )
+        self.assertTrue(model.relative_edges)
 
     def test_latent_attention_gnn_maps_airfrans_features_to_four_fields(self):
         model = BenchmarkModel("gnn")

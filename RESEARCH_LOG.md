@@ -613,7 +613,7 @@ Both protocols use the stratified fold-2 split, seed 2026, geometry inputs and C
 - Raw log-area weighting was removed from the code completely: `area_heads`, `area_aggregation`, the `gnn_area*` AirfRANS kinds and nodal dual areas. The entries above are its record. Its checkpoints remain on disk but no longer load with the current model code. The original count-weighted checkpoints still load; verified for the AirfRANS `gnn` checkpoint and the private GPU geometry checkpoint.
 - New option `aggregation="mean"`: neighbour messages are averaged (sum / count) instead of summed, a self-normalising pooling independent of node degree and sampling density. The latent read (softmax) and the graph mean were already self-normalising. Default stays `sum`; parameter count is unchanged.
 - New private-data variant `continuous`: node inputs are [x, y, wall distance] in metres; raw cell area is dropped from node inputs. Design inputs are unchanged. Edge inputs are [unit direction, log(distance / L_ref)] with L_ref the body length, so edges carry no cell measures. Near-wall loss and metrics keep the 0.05 m band, so the run is comparable with the geometry baseline. Caveat recorded before testing: log(distance / L_ref) is scale-invariant but not refinement-invariant (it shifts by -log 2 under 2x refinement).
-- AirfRANS kinds: `gnn_mean` (mean aggregation), `gnn_rel` ([direction, log distance] edges; coordinates are in chords) and `gnn_mean_rel`. `benchmarks.airfrans.evaluate --points N` re-evaluates a trained run at another sampling density (output `evaluation_N/`).
+- AirfRANS kinds: `gnn_mean` (mean aggregation), `gnn_rel` ([direction, log distance] edges), and `gnn_hybrid` (absolute 7-channel node inputs plus [unit direction, log distance, absolute dx/dy] 5-channel edges). `gnn_mean_rel` is dropped and is no longer in the runner. `benchmarks.airfrans.evaluate --points N` re-evaluates a trained run at another sampling density (output `evaluation_N/`).
 - New `refine_volume.py`: each polygon cell is split into one quad per vertex (vertex, edge midpoints, vertex-mean centre), i.e. 2x refinement for quads. Children tile their parents (checked against loader areas). Adjacency comes from siblings and from shared half-faces across parent faces. Wall distance is the exact distance to the WALL segments. No CFD exists on the refined mesh, so child predictions are area-averaged onto parents and compared with the CFD and with the original-mesh prediction ("consistency").
 - Wall-distance control: on Design_1 the exported STAR-CCM+ wall distance and the geometric distance differ by median 6.8e-5 m (max 9.5e-4 m; near-wall median 1.9% relative). Predicting on the original mesh with geometric wall distance changes mean RMSE by at most 0.002 Pa (geometry 2.412 -> 2.414, continuous 1.417 -> 1.417). The refinement differences below are therefore not a wall-distance artefact.
 - Verification: 76 tests pass (mean-aggregation degree invariance and checkpoints, continuous features, refinement tiling and adjacency, new AirfRANS kinds); Ruff and ty pass.
@@ -659,5 +659,25 @@ Command: `uv run python -u refine_volume.py --model NAME CHECKPOINT VARIANT --ou
 
 ### Next
 
-- Kaggle: `gnn_mean` and `gnn_mean_rel`, evaluated at 16k / 32k / 64k (notebook cell 5).
+- Kaggle: `gnn_hybrid`, evaluated at 16k / 32k / 64k (notebook cell 5). Run it alone with a 398-epoch final-epoch protocol; do not rerun `gnn_mean_rel`.
 - Private: test refinement robustness directly, e.g. edge inputs that are refinement-invariant (distance / local cell size) combined with continuous nodes, or training on mixed native and refined meshes. Repeat seeds before promoting the continuous variant.
+
+## 2026-11-24 - Recovered AirfRANS Relative-Edge Checkpoint
+
+- The saved Kaggle checkpoint is epoch **361**, not epoch 360; the most recent validation measurement is epoch 360, loss 0.108537. The checkpoint contains model weights and history, but not optimizer or scheduler state. It was evaluated locally without retraining on all 40 held-out designs. Its training normalization arrays and the local 96/16/40 split match the baseline exactly; all 40 saved positions and actual pressure arrays also match. Kaggle training used a Tesla T4; recovery evaluation used the laptop GPU.
+- The user's pasted Kaggle log separately reports the unavailable epoch-398 checkpoint: validation loss 0.106065 and 32k-node volume/surface pressure MSE 0.050215/0.093676. These are reported terminal results, not results reproduced from the saved checkpoint. Validation loss alone does not establish that the predictions are equivalent.
+
+| 32k-node held-out metric | Baseline GNN, epoch 398 | Relative-edge GNN, recovered epoch 361 |
+| --- | ---: | ---: |
+| Mean standardized volume pressure MSE | 0.056089 | 0.051682 |
+| Median volume pressure MSE | 0.009860 | 0.013816 |
+| Mean standardized surface pressure MSE | 0.144808 | 0.085109 |
+| Median surface pressure MSE | 0.006347 | 0.009720 |
+| Mean per-case relative lift error | 0.854564 | 0.798184 |
+| Median relative lift error | 0.123761 | 0.215503 |
+| Lift Spearman | 0.946529 | 0.929268 |
+
+- The recovered model improves volume and surface MSE on 18/40 and 10/40 cases, respectively; the means benefit from large improvements on the previously identified 14.684-degree case. Excluding that one case, mean volume MSE is 0.035275 versus 0.040563, and mean surface MSE is 0.061106 versus 0.043557. The reduced and repeatedly inspected test set, one seed, different checkpoint epochs and different evaluation devices preclude a generalization or causality claim.
+- Inference at 16k, 32k and 64k nodes gives volume MSE 0.052081, 0.051682 and 0.055978, and surface MSE 0.086825, 0.085109 and 0.090051. These are different random subsets of the same meshes, not a remeshing experiment. Results and prediction arrays are in `volume_results/airfrans_reduced_20261122/kaggle_gnn_rel_360epoch/evaluation{,_16000,_64000}/`.
+- Shared-scale CFD / baseline / recovered comparisons: [high-angle gain](volume_results/airfrans_reduced_20261122/kaggle_gnn_rel_360epoch/evaluation/airFoil2D_SST_90.415_14.684_4.356_6.209_11.299_baseline_vs_rel.png), [surface regression](volume_results/airfrans_reduced_20261122/kaggle_gnn_rel_360epoch/evaluation/airFoil2D_SST_63.433_6.161_3.278_0.0_6.358_baseline_vs_rel.png), and [volume regression](volume_results/airfrans_reduced_20261122/kaggle_gnn_rel_360epoch/evaluation/airFoil2D_SST_89.947_11.582_0.254_1.859_14.641_baseline_vs_rel.png). Pressure uses the actual-field 1st/99th percentile scale and errors use a shared 99th-percentile clipped scale.
+- Reproduce: `uv run python -m benchmarks.airfrans.evaluate --data public_benchmarks/airfans_Dataset/Dataset --splits benchmarks/airfrans/kaggle_splits_96_16_40.json --run-dir volume_results/airfrans_reduced_20261122/kaggle_gnn_rel_360epoch` and repeat with `--points 16000` and `--points 64000` in a fresh run directory. Existing evaluation directories are intentionally not overwritten.
