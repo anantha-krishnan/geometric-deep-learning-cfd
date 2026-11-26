@@ -190,6 +190,7 @@ def create_model(
     activation="default",
     design_dim=3,
     aggregation="sum",
+    global_mixer="latent",
 ):
     return Milestone1_GNN(
         geom_dim=geom_dim,
@@ -204,6 +205,7 @@ def create_model(
         message_attention_heads=message_attention_heads,
         activation=activation,
         aggregation=aggregation,
+        global_mixer=global_mixer,
     ).to(device)
 
 
@@ -511,6 +513,7 @@ def save_checkpoint(model, scalers, path, run_config=None):
                 "message_attention_heads": model.message_attention_heads,
                 "activation": model.activation,
                 "aggregation": model.aggregation,
+                "global_mixer": model.global_mixer,
             },
             "format_version": 2,
             "run_config": run_config or {"variant": "baseline"},

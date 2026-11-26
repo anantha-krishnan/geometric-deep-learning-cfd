@@ -194,6 +194,7 @@ class AirfransTrainingTests(unittest.TestCase):
             ("gnn_mean", "mean", 0),
             ("gnn_rel", "sum", 3),
             ("gnn_hybrid", "sum", 5),
+            ("gnn_hybrid_slice", "sum", 5),
         ):
             with self.subTest(kind=kind):
                 model = BenchmarkModel(kind)

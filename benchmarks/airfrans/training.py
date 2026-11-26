@@ -32,12 +32,13 @@ def physics_loss(predictions, targets, surface):
     return squared_error[surface].mean() + squared_error[~surface].mean()
 
 
-# Latent-attention GNN kinds: (neighbour aggregation, edge feature mode).
+# Latent-attention GNN kinds: (neighbour aggregation, edge feature mode, global mixer).
 GNN_KINDS = {
-    "gnn": ("sum", "none"),
-    "gnn_mean": ("mean", "none"),
-    "gnn_rel": ("sum", "relative"),
-    "gnn_hybrid": ("sum", "hybrid"),
+    "gnn": ("sum", "none", "latent"),
+    "gnn_mean": ("mean", "none", "latent"),
+    "gnn_rel": ("sum", "relative", "latent"),
+    "gnn_hybrid": ("sum", "hybrid", "latent"),
+    "gnn_hybrid_slice": ("sum", "hybrid", "slice"),
 }
 MODEL_KINDS = ("reference", "local", *GNN_KINDS)
 
@@ -79,7 +80,7 @@ class BenchmarkModel(nn.Module):
         elif kind in GNN_KINDS:
             from model import Milestone1_GNN
 
-            aggregation, edge_mode = GNN_KINDS[kind]
+            aggregation, edge_mode, global_mixer = GNN_KINDS[kind]
             edge_dim = {"none": 0, "relative": 3, "hybrid": 5}[edge_mode]
             self.model = Milestone1_GNN(
                 geom_dim=7,
@@ -92,6 +93,7 @@ class BenchmarkModel(nn.Module):
                 attention_tokens=32,
                 attention_heads=4,
                 aggregation=aggregation,
+                global_mixer=global_mixer,
             )
         elif kind == "reference":
             if reference_path is None:

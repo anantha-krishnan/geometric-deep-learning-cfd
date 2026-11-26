@@ -48,6 +48,49 @@ class VolumeTrainingTests(unittest.TestCase):
         altered[3:] *= 100
         torch.testing.assert_close(attention(altered, batch_idx)[:3], result[:3])
 
+    def test_slice_mixer_is_graph_isolated_equivariant_and_global(self):
+        torch.manual_seed(7)
+        mixer = models.SliceGlobalAttention(8, num_slices=4, num_heads=2).eval()
+        values = torch.randn(7, 8)
+        batch_idx = torch.tensor([0, 0, 0, 1, 1, 1, 1])
+        result = mixer(values, batch_idx)
+        altered = values.clone()
+        altered[3:] *= 100
+        torch.testing.assert_close(mixer(altered, batch_idx)[:3], result[:3])
+        permutation = torch.tensor([6, 1, 3, 0, 4, 2, 5])
+        torch.testing.assert_close(
+            mixer(values[permutation], batch_idx[permutation]), result[permutation]
+        )
+        inputs = torch.randn(5, 8, requires_grad=True)
+        mixer(inputs, torch.zeros(5, dtype=torch.long))[0].square().sum().backward()
+        assert inputs.grad is not None
+        self.assertGreater(inputs.grad[4].abs().sum().item(), 0)
+
+    def test_slice_mixer_round_trips_checkpoints(self):
+        data = training.prepare_data(
+            [make_graph(), make_graph("Design_2", 4)], "geometry"
+        )
+        scalers = training.fit_scalers(data)
+        item = training.normalize_data(data, scalers)[0]
+        model = training.create_model(
+            torch.device("cpu"), 5, 4, attention_tokens=4, attention_heads=2,
+            hidden_dim=8, global_mixer="slice",
+        )  # fmt: skip
+        self.assertIsInstance(model.attention_layers[0], models.SliceGlobalAttention)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "slice.pt"
+            training.save_checkpoint(model, scalers, path)
+            restored, _, _ = training.load_checkpoint(path, torch.device("cpu"))
+        self.assertEqual(restored.global_mixer, "slice")
+        torch.testing.assert_close(
+            training.predict_pressure(
+                model.eval(), item, scalers[2], torch.device("cpu")
+            ),
+            training.predict_pressure(restored, item, scalers[2], torch.device("cpu")),
+        )
+        with self.assertRaises(ValueError):
+            models.Milestone1_GNN(hidden_dim=8, global_mixer="other")
+
     def test_attention_transfers_global_information_and_gradients(self):
         torch.manual_seed(7)
         attention = models.LatentGlobalAttention(8, num_tokens=4, num_heads=2)

@@ -5,7 +5,10 @@ The geometric deep learning architecture (Mesh Message Passing GNN).
 import torch
 from torch import nn
 
+from benchmarks.transolver.model import TransolverBlock
+
 AGGREGATIONS = ("sum", "mean")
+GLOBAL_MIXERS = ("latent", "slice")
 
 
 class MessagePassingBlock(nn.Module):
@@ -172,6 +175,23 @@ class LatentGlobalAttention(nn.Module):
         return output
 
 
+class SliceGlobalAttention(nn.Module):
+    """Transolver Physics-Attention block (slice, attend, deslice), graph-isolated."""
+
+    def __init__(self, hidden_dim, num_slices=32, num_heads=4, activation="default"):
+        super().__init__()
+        self.block = TransolverBlock(
+            hidden_dim, num_slices, num_heads, mlp_ratio=2, activation=activation
+        )
+
+    def forward(self, cells, batch_idx):
+        output = torch.zeros_like(cells)
+        for graph_id in torch.unique(batch_idx):
+            mask = batch_idx == graph_id
+            output[mask] = self.block(cells[mask].unsqueeze(0)).squeeze(0)
+        return output
+
+
 class Milestone1_GNN(nn.Module):
     def __init__(
         self,
@@ -187,12 +207,16 @@ class Milestone1_GNN(nn.Module):
         message_attention_heads=0,
         activation="default",
         aggregation="sum",
+        global_mixer="latent",
     ):
         super().__init__()
         if activation not in ("default", "tanh"):
             raise ValueError(f"Unsupported activation: {activation}")
+        if global_mixer not in GLOBAL_MIXERS:
+            raise ValueError(f"Unsupported global mixer: {global_mixer}")
         self.activation = activation
         self.aggregation = aggregation
+        self.global_mixer = global_mixer
         if attention_tokens < 0:
             raise ValueError("Attention token count cannot be negative.")
         self.attention_tokens = attention_tokens
@@ -225,11 +249,13 @@ class Milestone1_GNN(nn.Module):
             nn.Tanh() if activation == "tanh" else nn.ReLU(),
             nn.Linear(hidden_dim, out_dim),
         )
+        # attention_tokens is the slice count when global_mixer == "slice".
+        mixer = (
+            SliceGlobalAttention if global_mixer == "slice" else LatentGlobalAttention
+        )
         self.attention_layers = nn.ModuleList(
             [
-                LatentGlobalAttention(
-                    hidden_dim, attention_tokens, attention_heads, activation
-                )
+                mixer(hidden_dim, attention_tokens, attention_heads, activation)
                 for _ in range(num_layers)
             ]
             if attention_tokens

@@ -107,6 +107,7 @@ def create_architecture_model(architecture, device):
         activation=architecture.get("activation", "default"),
         design_dim=architecture.get("design_dim", 3),
         aggregation=architecture.get("aggregation", "sum"),
+        global_mixer=architecture.get("global_mixer", "latent"),
     )
 
 
@@ -231,6 +232,11 @@ def architecture_choices(device=None, geom_dim=5, edge_dim=4, design_dim=3):
                 **latent_reference,
                 "name": "latent_attention32_mean",
                 "aggregation": "mean",
+            },
+            {
+                **latent_reference,
+                "name": "slice_attention32",
+                "global_mixer": "slice",
             },
         ]
     )
