@@ -1,0 +1,152 @@
+import io
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+import pyvista as pv
+import torch
+
+from benchmarks.shapenet_car.data import build_case, load_case
+from benchmarks.shapenet_car.splits import discover_folds, split_fold
+from benchmarks.shapenet_car.training import BenchmarkModel, field_loss, field_scores
+
+
+class ShapeNetCarDataTests(unittest.TestCase):
+    def test_build_case_merges_surface_points_and_keeps_field_masks(self):
+        volume_points = np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=float)
+        surface_points = np.array([[1, 0, 0], [0, 1, 0]], dtype=float)
+        velocity = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=float)
+        pressure = np.array([10, 20], dtype=float)
+        normals = np.array([[1, 0, 0], [0, 1, 0]], dtype=float)
+        case = build_case(volume_points, velocity, surface_points, pressure, normals)
+
+        np.testing.assert_array_equal(case["surface"], [False, False, True, True])
+        np.testing.assert_allclose(
+            case["pos"], volume_points[[0, 2]].tolist() + surface_points.tolist()
+        )
+        np.testing.assert_allclose(
+            case["y"][:, :3], [[1, 2, 3], [7, 8, 9], [4, 5, 6], [0, 0, 0]]
+        )
+        np.testing.assert_allclose(case["y"][:, 3], [0, 0, 10, 20])
+        np.testing.assert_allclose(case["x"][-2:, 4:], normals)
+        np.testing.assert_allclose(case["x"][-2:, 3], 0)
+
+    def test_load_case_reads_vtk_fields_and_graph(self):
+        points = np.array(
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [1, 1, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [1, 1, 1],
+                [0, 1, 1],
+            ],
+            dtype=np.float32,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary) / "param0" / "case"
+            folder.mkdir(parents=True)
+            volume = pv.UnstructuredGrid(
+                np.array([8, *range(8)]), np.array([12]), points
+            )
+            volume.point_data["velocity"] = np.tile([1.0, 2.0, 3.0], (8, 1))
+            volume.set_active_vectors("velocity")
+            volume.save(folder / "hexvelo_smpl.vtk", binary=False)
+            surface = pv.UnstructuredGrid(
+                np.array([4, 0, 1, 2, 3]), np.array([9]), points[:4]
+            )
+            surface.point_data["pressure"] = np.array([4.0, 5.0, 6.0, 7.0])
+            surface.set_active_scalars("pressure")
+            surface.save(folder / "quadpress_smpl.vtk", binary=False)
+            (folder / "cd.txt").write_text("0.42")
+            case = load_case(Path(temporary), "param0/case")
+            with tarfile.open(Path(temporary) / "param0.tar.gz", "w:gz") as archive:
+                archive.add(folder, arcname="param0/case")
+            archived = load_case_from_archive(Path(temporary))
+
+        self.assertEqual(case["name"], "param0/case")
+        self.assertEqual(case["pos"].shape, (8, 3))
+        self.assertEqual(case["x"].shape, (8, 7))
+        self.assertEqual(case["surface"].sum(), 4)
+        np.testing.assert_allclose(case["y"][case["surface"], 3], [4, 5, 6, 7])
+        self.assertAlmostEqual(case["true_cd"], 0.42)
+        self.assertEqual(case["edge_index"].shape, (2, 64))
+        np.testing.assert_array_equal(archived["x"], case["x"])
+        np.testing.assert_array_equal(archived["y"], case["y"])
+        torch.testing.assert_close(archived["edge_index"], case["edge_index"])
+
+
+def load_case_from_archive(root):
+    with tempfile.TemporaryDirectory() as temporary:
+        archive_root = Path(temporary)
+        (archive_root / "param0.tar.gz").write_bytes(
+            (root / "param0.tar.gz").read_bytes()
+        )
+        return load_case(archive_root, "param0/case")
+
+
+class ShapeNetCarSplitTests(unittest.TestCase):
+    def test_discovers_archived_and_extracted_folds(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for fold in range(9):
+                if fold == 0:
+                    with tarfile.open(root / "param0.tar.gz", "w:gz") as archive:
+                        for member in (
+                            "case/hexvelo_smpl.vtk",
+                            "case/quadpress_smpl.vtk",
+                            "case/cd.txt",
+                            "metadata/param1.txt",
+                            "metadata/cd.txt",
+                        ):
+                            info = tarfile.TarInfo(f"param0/{member}")
+                            info.size = 1
+                            archive.addfile(info, io.BytesIO(b"x"))
+                else:
+                    folder = root / f"param{fold}" / "case"
+                    folder.mkdir(parents=True)
+                    for file in ("hexvelo_smpl.vtk", "quadpress_smpl.vtk", "cd.txt"):
+                        (folder / file).touch()
+            folds = discover_folds(root)
+            train, validation = split_fold(folds, 0)
+        self.assertEqual(validation, ["param0/case"])
+        self.assertEqual(len(train), 8)
+        self.assertNotIn(validation[0], train)
+        with self.assertRaises(ValueError):
+            split_fold(folds, 9)
+
+
+class ShapeNetCarComparisonTests(unittest.TestCase):
+    def test_loss_and_scores_use_reference_pressure_and_velocity_regions(self):
+        targets = torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 2.0]])
+        predictions = torch.tensor([[2.0, 0.0, 0.0, 999.0], [0.0, 0.0, 0.0, 3.0]])
+        surface = torch.tensor([False, True])
+        self.assertAlmostEqual(
+            field_loss(predictions, targets, surface).item(), 1 / 6 + 0.5
+        )
+        scores = field_scores(predictions.numpy(), targets.numpy(), surface.numpy())
+        self.assertAlmostEqual(scores["velocity_relative_l2"], 1.0)
+        self.assertAlmostEqual(scores["pressure_relative_l2"], 0.5)
+
+    def test_models_accept_three_dimensional_car_features(self):
+        features = torch.randn(8, 7)
+        positions = torch.randn(8, 3)
+        edges = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 0]])
+        for kind in ("gnn", "local_transolver"):
+            model = BenchmarkModel(kind, hidden_dim=16, num_layers=1)
+            self.assertEqual(model(features, positions, edges).shape, (8, 4))
+
+    def test_invalid_case_names_and_zero_norm_metrics(self):
+        with self.assertRaises(ValueError):
+            load_case(".", "param0/..\\other")
+        scores = field_scores(np.zeros((2, 4)), np.zeros((2, 4)), [False, True])
+        self.assertTrue(np.isnan(scores["velocity_relative_l2"]))
+        self.assertTrue(np.isnan(scores["pressure_relative_l2"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

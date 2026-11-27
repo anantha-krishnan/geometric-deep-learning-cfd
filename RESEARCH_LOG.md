@@ -732,3 +732,21 @@ Command: `uv run python -u refine_volume.py --model NAME CHECKPOINT VARIANT --ou
 - New arms: private `slice_attention32` (3 layers, width 32, 32 slices, 4 heads; 48,845 parameters with continuous inputs versus 91,937 for `latent_attention32`) and AirfRANS `gnn_hybrid_slice` (49,168 versus 92,260 for `gnn_hybrid`). Parameter counts are not matched; a slice-versus-latent difference therefore also includes a capacity difference.
 - Verification: graph-isolation, permutation-equivariance, global-gradient and checkpoint round-trip tests; 83 tests pass, Ruff and ty pass. No accuracy result yet.
 - Planned commands (same protocols as the references): private `uv run python -u compare_volume_architectures.py --design Design_1 --stratify-inner --variant continuous --architectures slice_attention32 --max-epochs 1000 --minimum-epochs 100 --validation-interval 10 --patience 8 --results-dir volume_results/slice_continuous_20261126 --comparison-dir volume_results/continuous_20261124/latent_attention32 --comparison-label "Latent attention, continuous inputs"`; AirfRANS on Kaggle `--models gnn_hybrid_slice --epochs 398`, compared with `kaggle_gnn_hybrid_398epoch` and evaluated at 16k/32k/64k and on the 200 official cases.
+
+## 2026-11-26 - AirfRANS Hybrid Transolver-Slice Results (Mixed)
+
+- Run: `kaggle_gnn_hybrid_slice_398epoch`; Tesla T4, torch 2.11.0+cu130, seed 2026, 398 epochs, 32,000 nodes per inference pass, same 96/16/40 reduced split as `kaggle_gnn_hybrid_398epoch`. The two evaluation folders contain the identical 40 case names and actual pressure arrays. This is not yet a 200-case official-test evaluation.
+
+| 40-case held-out metric | Hybrid latent baseline | Hybrid slice | Slice wins |
+| --- | ---: | ---: | ---: |
+| Mean volume pressure MSE | 0.06668 | 0.04081 | 32/40 |
+| Median volume pressure MSE | 0.00828 | 0.00623 | |
+| Mean surface pressure MSE | 0.09621 | 0.29265 | 14/40 |
+| Median surface pressure MSE | 0.00539 | 0.00844 | |
+| Mean relative lift error | 0.60523 | 0.80444 | 16/40 |
+| Lift Spearman | 0.95159 | 0.89006 | |
+
+- Paired volume MSE favours slicing (geometric-mean per-case ratio slice/baseline 0.734; Wilcoxon p=0.00057). Paired surface MSE is not significant (geometric-mean ratio 1.048; p=0.277). The mean surface score is dominated by the 14.684-degree case: surface MSE 1.382 -> 9.958, while volume MSE improves 1.147 -> 0.525. Excluding that one case, mean volume MSE is 0.03898 -> 0.02840 and mean surface MSE is 0.06325 -> 0.04482. This sensitivity makes the all-case surface mean a poor standalone summary; it does not justify removing the case from the primary result.
+- Sampling-density summaries (16k / 32k / 64k nodes): baseline volume MSE 0.06666 / 0.06668 / 0.06572 and surface MSE 0.13527 / 0.09621 / 0.07003; slice volume MSE 0.04370 / 0.04081 / 0.03897 and surface MSE 0.28603 / 0.29265 / 0.30805. Slicing keeps a lower volume mean at each sampled density but a higher surface mean at each density. These are inference-subset sensitivity checks, not mesh refinement tests.
+- Common-scale actual/prediction/error plots, checked visually: [14.684-degree outlier](volume_results/airfrans_reduced_20261122/kaggle_gnn_hybrid_slice_398epoch/hybrid_slice_comparisons/airFoil2D_SST_90.415_14.684_4.356_6.209_11.299_comparison.png), [large slice gain](volume_results/airfrans_reduced_20261122/kaggle_gnn_hybrid_slice_398epoch/hybrid_slice_comparisons/airFoil2D_SST_85.752_6.341_0.382_6.715_8.448_comparison.png), and [large-error case](volume_results/airfrans_reduced_20261122/kaggle_gnn_hybrid_slice_398epoch/hybrid_slice_comparisons/airFoil2D_SST_92.85_-3.031_6.083_2.008_9.267_comparison.png). The NPZ pressure fields are in dataset units, whereas reported pressure MSE is standardised. Corrected the plot helper's colorbar labels accordingly.
+- Capacity confound: the implementation has 49,168 parameters for `gnn_hybrid_slice` versus 92,260 for `gnn_hybrid`; this is not parameter matched. One seed, reduced training set, 40-case evaluation, and no repeated seeds mean no architecture promotion. Keep the slice arm as a promising volume-pressure candidate, with surface and lift behavior unresolved; evaluate on all 200 official test cases and repeat a seed before a broader conclusion.

@@ -1046,18 +1046,44 @@ authors' evaluation script.
 MSE and lift scores. Lower is better except for Spearman correlation.}
 \label{tab:airfrans_mse}
 \resizebox{\columnwidth}{!}{%
-\begin{tabular}{lrrrrr}
+\begin{tabular}{lrrrrrr}
 \toprule
-Metric & Authors' Transolver & GNN & GNN, area & GNN, relative & GNN, mean + relative & GNN, hybrid \\
+Metric & Authors' Transolver & GNN & GNN, area & GNN, relative & GNN, mean + relative & GNN, hybrid & GNN, hybrid slice \\
 \midrule
-Volume pressure MSE & 0.0850 & 0.0561 & 0.0543 & \textbf{0.0517} & 0.0934 & 0.0512 \\
-Surface pressure MSE & 0.6920 & 0.1448 & 0.0608 & \textbf{0.0851} & 0.1203 & 0.0966 \\
-Mean relative lift error & 1.6751 & 0.8546 & 0.6458 & 0.7982 & 0.5335 & \textbf{0.4245} \\
-Lift Spearman correlation & 0.9413 & 0.9465 & 0.8921 & 0.9293 & 0.9490 & \textbf{0.9713} \\
+Volume pressure MSE & 0.0850 & 0.0561 & 0.0543 & \textbf{0.0517} & 0.0934 & 0.0512 & 0.0408 \\
+Surface pressure MSE & 0.6920 & 0.1448 & 0.0608 & \textbf{0.0851} & 0.1203 & 0.0966 & 0.2926 \\
+Mean relative lift error & 1.6751 & 0.8546 & 0.6458 & 0.7982 & 0.5335 & \textbf{0.4245} & 0.8044 \\
+Lift Spearman correlation & 0.9413 & 0.9465 & 0.8921 & 0.9293 & 0.9490 & \textbf{0.9713} & 0.8901 \\
 \bottomrule
 \end{tabular}
 }
 \end{table}
+
+\textbf{Transolver slicing in the hybrid GNN (exploratory).} We replaced the
+32 latent tokens after each message-passing layer with 32 input-dependent
+Transolver slices, keeping the hybrid edge features, sum aggregation, split,
+seed, sample count and 398-epoch training protocol. On the same 40 test cases,
+mean volume MSE falls from 0.0667 to 0.0408 (32/40 cases; paired Wilcoxon
+$p=5.7\times10^{-4}$), while mean surface MSE rises from 0.0962 to 0.2926
+(14/40 cases; $p=0.277$). This surface regression is dominated by the
+$14.684^\circ$ case (1.382 to 9.958); excluding it, mean surface MSE is
+0.0633 for the latent model and 0.0448 for slicing. Mean relative lift error
+worsens from 0.605 to 0.804 and Spearman correlation from 0.952 to 0.890.
+The slice model has 49{,}168 parameters versus 92{,}260 for the latent model,
+so this is not a parameter-matched architecture comparison. It is one seed on
+the reduced split, not an official 200-case evaluation or a promotion result.
+Common-scale comparisons for the outlier, a strong slice gain and a large-error
+case are saved at
+\texttt{volume\_results/airfrans\_reduced\_20261122/kaggle\_gnn\_hybrid\_slice\_398epoch/hybrid\_slice\_comparisons/}.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{volume_results/airfrans_reduced_20261122/kaggle_gnn_hybrid_slice_398epoch/hybrid_slice_comparisons/airFoil2D_SST_90.415_14.684_4.356_6.209_11.299_comparison.png}
+\caption{The $14.684^\circ$ AirfRANS case: actual pressure, hybrid latent attention,
+and hybrid Transolver slicing with shared pressure and absolute-error scales.
+The saved pressure fields are in dataset units; table MSE values are standardized.}
+\label{fig:airfrans_hybrid_slice}
+\end{figure*}
 
 An additional relative-edge GNN checkpoint recovered at epoch 361 gives mean
 volume/surface pressure MSE of 0.0517/0.0851 on these 40 cases, compared with

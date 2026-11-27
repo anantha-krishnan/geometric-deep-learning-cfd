@@ -217,9 +217,13 @@ def plot_airfrans_comparison(positions, actual, predictions, title, output, zoom
 
     for row_axes in axes:
         row_axes[0].set_ylabel("y [m]")
-    figure.colorbar(pressure, ax=axes[0, :], label="Pressure [normalized MSE scale]")
-    figure.colorbar(error, ax=axes[1, :], label="|Error| (p99 clip)")
-    figure.colorbar(pressure, ax=axes[2, :], label="Pressure [normalized MSE scale]", shrink=0.8)
+    figure.colorbar(pressure, ax=axes[0, :], label="Pressure [dataset units]")
+    figure.colorbar(
+        error, ax=axes[1, :], label="Absolute pressure error [dataset units] (p99 clip)"
+    )
+    figure.colorbar(
+        pressure, ax=axes[2, :], label="Pressure [dataset units]", shrink=0.8
+    )
     figure.suptitle(title)
     figure.savefig(output, dpi=200, facecolor="white")
     plt.close(figure)
