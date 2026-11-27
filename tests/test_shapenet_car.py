@@ -9,7 +9,11 @@ import pyvista as pv
 import torch
 
 from benchmarks.shapenet_car.data import build_case, load_case
-from benchmarks.shapenet_car.splits import discover_folds, split_fold
+from benchmarks.shapenet_car.splits import (
+    build_reduced_splits,
+    discover_folds,
+    split_fold,
+)
 from benchmarks.shapenet_car.training import BenchmarkModel, field_loss, field_scores
 
 
@@ -90,6 +94,67 @@ def load_case_from_archive(root):
 
 
 class ShapeNetCarSplitTests(unittest.TestCase):
+    def test_materialize_keeps_validation_and_held_out_test_separate(self):
+        from benchmarks.shapenet_car.slice_dataset import create_reduced_dataset
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "raw"
+            for fold, case in ((0, "test"), (1, "train"), (2, "validation")):
+                directory = root / f"param{fold}" / case
+                directory.mkdir(parents=True)
+                for filename in ("hexvelo_smpl.vtk", "quadpress_smpl.vtk", "cd.txt"):
+                    (directory / filename).write_text(f"{case} {filename}")
+            splits = {
+                "train": ["param1/train"],
+                "validation": ["param2/validation"],
+                "test": ["param0/test"],
+            }
+            destination = Path(temporary) / "reduced"
+            create_reduced_dataset(root, splits, destination)
+            self.assertTrue(
+                (destination / "training_data/param1/train/cd.txt").is_file()
+            )
+            self.assertTrue(
+                (destination / "training_data/param0/validation/cd.txt").is_file()
+            )
+            self.assertTrue((destination / "test_data/param0/test/cd.txt").is_file())
+            self.assertFalse((destination / "training_data/param0/test").exists())
+            for fold in range(9):
+                self.assertTrue(
+                    (destination / "training_data" / f"param{fold}").is_dir()
+                )
+
+    def test_reduced_split_is_reproducible_disjoint_and_respects_test_fold(self):
+        folds = [
+            [f"param{fold}/case{index}" for index in range(20)] for fold in range(9)
+        ]
+        features = {
+            name: {
+                "extent_x": float(index),
+                "extent_y": float(index % 5),
+                "extent_z": float(index % 3),
+                "surface_points": float(100 + index),
+                "volume_points": float(1000 + index),
+            }
+            for fold in folds
+            for index, name in enumerate(fold)
+        }
+        splits = build_reduced_splits(folds, features, 32, 16, 10, seed=2026)
+        self.assertEqual(
+            splits, build_reduced_splits(folds, features, 32, 16, 10, seed=2026)
+        )
+        self.assertEqual(
+            [len(splits[key]) for key in ("train", "validation", "test")], [32, 16, 10]
+        )
+        selected = [case for cases in splits.values() for case in cases]
+        self.assertEqual(len(selected), len(set(selected)))
+        self.assertTrue(set(splits["test"]).issubset(folds[0]))
+        self.assertFalse(set(splits["train"] + splits["validation"]) & set(folds[0]))
+        self.assertEqual(
+            {name.split("/")[0] for name in splits["train"]},
+            {f"param{fold}" for fold in range(1, 9)},
+        )
+
     def test_discovers_archived_and_extracted_folds(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -1,0 +1,505 @@
+{
+  "seed": 2026,
+  "held_out_fold": 0,
+  "source_counts": {
+    "train_validation": 789,
+    "test": 100
+  },
+  "splits": {
+    "train": [
+      "param1/1f604bfb8fb95171ac94768c3754c895",
+      "param1/1f7393970917e558b4a20251cec15600",
+      "param1/21e028eacc690c9de13f97dcb961e16",
+      "param1/22abdb50fcc189d58a1aed4fb5fe5280",
+      "param1/2401f097228fdc1348b30181b0729b3",
+      "param1/24819ffdc34b28efe4bee94a37836d67",
+      "param1/24dc3903b254fe41b448bf2dc92c4fab",
+      "param1/28c83c5adf799340f2cc18e077b7ba53",
+      "param1/2928f77d711bf46eaa69dfdc5532bb13",
+      "param1/29b714c4aee36c9d6108f064aff2426d",
+      "param1/2e6a9622bf83f04c38ee77d0178bbf4a",
+      "param1/2fc99d3fe3f1f3b3b5e3401710af905a",
+      "param2/30776fb35aa99150ee3dd0c47654345b",
+      "param2/34211d29d94cbd52b7c4f0665aafbacd",
+      "param2/3462d5da3654b52d4a47c09276b7f6b1",
+      "param2/35de0d0cc71179dc1a98dff5b6c5dec6",
+      "param2/36b28d2fd1085c53b6581f6f0cdd370e",
+      "param2/7db943b676cd86d5729c04438af8eabf",
+      "param2/7f09e6522f212f94512af8eced68fa8",
+      "param2/810476f203a99d3586b58a9b1f5938e0",
+      "param2/8141677722f680076a2345809e2bb169",
+      "param2/82d37fceb984256bf200a72c9245aee7",
+      "param2/862a345b6328d641ef3ecc8551d2c1fa",
+      "param2/86ab1c2ea989fda9ab15905beabd3f20",
+      "param3/88fc7d197310ea4b961b666ad9ed1438",
+      "param3/8b7b6c2a5c664ca6efe5f291bc2f5fd0",
+      "param3/8bb2ae81ca9e9a4ed14ae991e75ee782",
+      "param3/8c6c271a149d8b68949b12cf3977a48b",
+      "param3/8dcccd3d9221f9a0d61b6a34f3fd808c",
+      "param3/8e39ba11949027ce14914b7641b2fd67",
+      "param3/8e7475bb6c54d39f398bc3e9fa82bf3",
+      "param3/8f7520f908ee54e2391da6d66c78fad2",
+      "param3/8fac42d0e74f5b454ca84d60642ec7e8",
+      "param3/8fadf13734ff86b5f9e6f9c7735c6b41",
+      "param3/8fc220461ea512f3abeba927b56dd398",
+      "param3/90917495a9603208c368040825ed335",
+      "param4/9375ded98380ccc77bbf13cb42ad9d73",
+      "param4/93c647af0338e9f35a06092d926a13ca",
+      "param4/94cfcfb74e246f938acb0ff76f4aec7d",
+      "param4/9511b5ded804a33f597505fd7d99b613",
+      "param4/9698be0fd3516f01fbeda5389ab05f5f",
+      "param4/96e3179460185d889130d420a26edb84",
+      "param4/9a0365ab56ae57ffdf6ad3edb04a4bc5",
+      "param4/9a92ea1009f6b5127b5d9dbd93af5e1a",
+      "param4/9aca55eb91a9b348ab7ba9bb57593f51",
+      "param4/9c06490e82e122093f599d94ae17ce2b",
+      "param4/9c27cdc4feb2fa5d4244558fce818712",
+      "param4/9d5c0108ce2c848e977b27045b1d8055",
+      "param5/9e3a69fc219ef73d37c910d2f91b3d73",
+      "param5/a015b428cf628af3522dcdfaad316d22",
+      "param5/a0a1b0377d72e86bab3dd76bf33b0f5e",
+      "param5/a262c2044977b6eb52ab7aae4be20d81",
+      "param5/a26d63de878b28fd52980f173b56924f",
+      "param5/a281de4b24f5500d4c40f34de8f3bdb8",
+      "param5/a421aeec78440e40d3a3ff116860ca63",
+      "param5/a471cdae8ec5df5c9e317a6cc797b629",
+      "param5/a5b7cc1a5ab2828b28b0b7b876595fb8",
+      "param5/a61488f91b2837f8473f10e6caaeca56",
+      "param5/a6842a04cef3e5ce69a949ac99a843c4",
+      "param5/a88baf98bc73649fdd61bedeefabbeb6",
+      "param6/abd0aa2e0ca4fc4793249f89773e858",
+      "param6/ac85727971fe63dd2c67ef33d7521ade",
+      "param6/ae0058d9ae9bd33d51a95aaa6caba1d3",
+      "param6/aff67f837a958d2329984c4afd2e98a4",
+      "param6/b0f1e8e11aea5f622fdea40a56b4c57d",
+      "param6/b1c6a021c1c47884c9463ecce7643e8e",
+      "param6/b21bc9621960f418c330b66f68c70be2",
+      "param6/b25bd03ac3b1ce39d5238b9ecc7822b0",
+      "param6/b40436b4639e80b8d61b6a34f3fd808c",
+      "param6/b40c9e44350f95aa1b9234e4ab67a3eb",
+      "param6/b4250be25fbd19a994abc9429888948c",
+      "param6/b47d993a5e2dd15e3a3aa1d2d3319a4",
+      "param7/b56bfe0649294ebecb02238be5da228",
+      "param7/b6bcc1b1ccbf0ea0996e71cb10be68ac",
+      "param7/ba03db3866faadf0dd27b2ba4335b978",
+      "param7/ba1b8956b1d84856369912a1ddf80ef7",
+      "param7/baf3415a57e6f282b23c333ee1a445e",
+      "param7/bc36588d4095dc0975c67b3b1e763fcf",
+      "param7/bc75e8adfee9ad70bda733a39f84326d",
+      "param7/bc9cd53b74743dcc8772afa45900d07f",
+      "param7/bd33b9efe58ebefa99f8616cdb5dd27c",
+      "param7/bf8c14637ee36251ae3e053f6a533410",
+      "param7/c033fb1c91079242ed3696d854eee1ec",
+      "param7/c2283d62367d637249b991141ee51d9a",
+      "param8/c4941d6a2266813c3a2b1a2e5e169910",
+      "param8/c4a2e92c4b79ef3140273d3a78e6b502",
+      "param8/c4f6540454e65939921cb81cb1632a5e",
+      "param8/c53256341ac5693c66d89345e534c861",
+      "param8/c6ab70b8319d7f2451751fb7affef409",
+      "param8/c7ce82b4b1e795b0cfd826dd468a5497",
+      "param8/c8bc71dadbdaa890becf71e2e014ff6f",
+      "param8/c9e555bb1a17cfbc5d918097f81825e3",
+      "param8/cc7dfb5ecdf370a178c14a9d99ecf91",
+      "param8/ccac541c0db2044736815730d7fe4119",
+      "param8/cce33c56b1c83237c7b48e36e31209b9",
+      "param8/ceb561c72a407ddfdc50a691c68014fd"
+    ],
+    "validation": [
+      "param1/21b8d0946135481a8772afa45900d07f",
+      "param1/274bb81c9dd9420b748999a5d81a158c",
+      "param2/819b98c138192c88e5e79d9024e2fcae",
+      "param2/856c62efeff8401567f6fefc01cc7126",
+      "param3/8c264b10c4ec3e91fdeea60824a43a0b",
+      "param3/8e2f0f7f5ca505b56227cba038bf7c95",
+      "param4/94c0575659c6cdf2091b4cb93147ff9",
+      "param4/9c10e71c06558c3b1bb46d2556ba67d",
+      "param5/9e52d425db48a33bbda733a39f84326d",
+      "param5/a387407d49e209fdeea60824a43a0b",
+      "param6/abcabe3968a64d4f16abce8cb03e7794",
+      "param6/b17d638e7def9adbc8a6c4a50ada6f9f",
+      "param7/b61b7103e8d8af91fe21694bd5f519d1",
+      "param7/bebfba98a5e97c6180360680c1602c7d",
+      "param8/c5b67d87b22583dc13ca2951bd3ea3d2",
+      "param8/cf698011f90ac05f253c03b7df20edd5"
+    ],
+    "test": [
+      "param0/10e15fd62309a13d1812324a4c0d910",
+      "param0/1104f0924e03f2b6fc5886e868449015",
+      "param0/119033fe083145e22f31600ac759c763",
+      "param0/11dba0c2ec8127356c2fe9dcfa1ee2f8",
+      "param0/1213742aa7815fd0e23d60a1b706b44f",
+      "param0/1284876ac0e2371aa4dbb766064f8bbf",
+      "param0/12a034b6be9afb50ae983613a2e0a741",
+      "param0/12d463649ed6c176ab98a7077c964a60",
+      "param0/139718b631cbca546a36136419d55d5c",
+      "param0/13d090612aec3d80ca92a4cdad802b45",
+      "param0/150f2cf6e9c54d08c24a350006d347c",
+      "param0/158a95b4da25aa1fa37f3fc191551700",
+      "param0/15c3b923c85d22796d8b9531f93cc8de",
+      "param0/15cc37ac9b3b756acfd826dd468a5497",
+      "param0/1641efa5c92514d86c4f4dbcda5f2fc0",
+      "param0/1687b77b048d1aaf635b88185c42637a",
+      "param0/16bd0438de54fc91b1bb46d2556ba67d",
+      "param0/1724ae84377e0b9ba6c2c95b41a5446d",
+      "param0/173669aeeba92aaec4929b8bd41b8bc6",
+      "param0/1736b8494abf38ba4eb766e5a46fceab",
+      "param0/18a9275b78be4b9ec6d3267fc5334296",
+      "param0/192fdf42f5a2623d673ddeabdcc8c6e",
+      "param0/198d8e274c59511b36a1a31af8f59",
+      "param0/198dfa16ba9f5f6617e76f36a4eac3ec",
+      "param0/19cd3489f05d203f9ed410a010efa019",
+      "param0/1a56d596c77ad5936fa87a658faf1d26",
+      "param0/1ab80bc91a45b7d0a31091d2234b9f68",
+      "param0/1acfbda4ce0ec524bedced414fad522f",
+      "param0/1ae530f49a914595b491214a0cc2380",
+      "param0/1aef0af3cdafb118c6a40bdf315062da",
+      "param0/1b94aad142e6c2b8af9f38a1ee687286",
+      "param0/1bb6b1ff46096f592dfac2620a0cf07b",
+      "param0/1c1bd2dcbb13aa5a6b652ed61c4ad126",
+      "param0/1c490bf1c6b32ef6ff213501a803f212",
+      "param0/1c5a350ea0f55f793fbce9ec40e1f047",
+      "param0/1c66dbe15a6be89a7bfe055aeab68431",
+      "param0/1cd50bde9a3e711637b0898eccd7168",
+      "param0/1d0a46cfc2799eefdeea60824a43a0b",
+      "param0/1d4066f8ae88a1ebec8ca19d7516cb42",
+      "param0/1dbb02c20bb93af81c1b3b2ed8d13bf8"
+    ]
+  },
+  "distribution": {
+    "train": {
+      "extent_x": {
+        "source_quantiles": [
+          2.6222400665283203,
+          3.090939998626709,
+          3.193769931793213,
+          3.289530038833618,
+          3.5995399951934814
+        ],
+        "subset_quantiles": [
+          2.87992000579834,
+          3.1020374596118927,
+          3.2039250135421753,
+          3.294265031814575,
+          3.516619920730591
+        ],
+        "ks_distance": 0.04863751584283904
+      },
+      "extent_y": {
+        "source_quantiles": [
+          1.0783510208129883,
+          1.9725479409098625,
+          2.281092017889023,
+          2.557496041059494,
+          5.020317196846008
+        ],
+        "subset_quantiles": [
+          1.1748470067977905,
+          1.9735724814236164,
+          2.2833885699510574,
+          2.57357619702816,
+          4.10303607583046
+        ],
+        "ks_distance": 0.04871673003802279
+      },
+      "extent_z": {
+        "source_quantiles": [
+          5.131510019302368,
+          6.917140007019043,
+          7.407280206680298,
+          7.840859889984131,
+          10.152099609375
+        ],
+        "subset_quantiles": [
+          5.871049880981445,
+          7.017029881477356,
+          7.424450039863586,
+          7.797827422618866,
+          9.121449947357178
+        ],
+        "ks_distance": 0.04249841571609625
+      },
+      "surface_points": {
+        "source_quantiles": [
+          3682.0,
+          3682.0,
+          3682.0,
+          3682.0,
+          3682.0
+        ],
+        "subset_quantiles": [
+          3682.0,
+          3682.0,
+          3682.0,
+          3682.0,
+          3682.0
+        ],
+        "ks_distance": 0.0
+      },
+      "volume_points": {
+        "source_quantiles": [
+          29498.0,
+          29498.0,
+          29498.0,
+          29498.0,
+          29498.0
+        ],
+        "subset_quantiles": [
+          29498.0,
+          29498.0,
+          29498.0,
+          29498.0,
+          29498.0
+        ],
+        "ks_distance": 0.0
+      },
+      "fold_fraction": {
+        "param1": {
+          "source": 0.12547528517110265,
+          "subset": 0.125
+        },
+        "param2": {
+          "source": 0.1229404309252218,
+          "subset": 0.125
+        },
+        "param3": {
+          "source": 0.1267427122940431,
+          "subset": 0.125
+        },
+        "param4": {
+          "source": 0.1267427122940431,
+          "subset": 0.125
+        },
+        "param5": {
+          "source": 0.12167300380228137,
+          "subset": 0.125
+        },
+        "param6": {
+          "source": 0.1267427122940431,
+          "subset": 0.125
+        },
+        "param7": {
+          "source": 0.12420785804816223,
+          "subset": 0.125
+        },
+        "param8": {
+          "source": 0.12547528517110265,
+          "subset": 0.125
+        }
+      }
+    },
+    "validation": {
+      "extent_x": {
+        "source_quantiles": [
+          2.6222400665283203,
+          3.090939998626709,
+          3.193769931793213,
+          3.289530038833618,
+          3.5995399951934814
+        ],
+        "subset_quantiles": [
+          3.00068998336792,
+          3.088822513818741,
+          3.209779977798462,
+          3.2761875689029694,
+          3.4431999921798706
+        ],
+        "ks_distance": 0.12040557667934093
+      },
+      "extent_y": {
+        "source_quantiles": [
+          1.0783510208129883,
+          1.9725479409098625,
+          2.281092017889023,
+          2.557496041059494,
+          5.020317196846008
+        ],
+        "subset_quantiles": [
+          1.1939710229635239,
+          1.9934349432587624,
+          2.2714109383523464,
+          2.446453968062997,
+          3.4215940833091736
+        ],
+        "ks_distance": 0.13339670468948037
+      },
+      "extent_z": {
+        "source_quantiles": [
+          5.131510019302368,
+          6.917140007019043,
+          7.407280206680298,
+          7.840859889984131,
+          10.152099609375
+        ],
+        "subset_quantiles": [
+          6.420650005340576,
+          7.05611264705658,
+          7.43128502368927,
+          7.908382534980774,
+          9.092829942703247
+        ],
+        "ks_distance": 0.11161280101394166
+      },
+      "surface_points": {
+        "source_quantiles": [
+          3682.0,
+          3682.0,
+          3682.0,
+          3682.0,
+          3682.0
+        ],
+        "subset_quantiles": [
+          3682.0,
+          3682.0,
+          3682.0,
+          3682.0,
+          3682.0
+        ],
+        "ks_distance": 0.0
+      },
+      "volume_points": {
+        "source_quantiles": [
+          29498.0,
+          29498.0,
+          29498.0,
+          29498.0,
+          29498.0
+        ],
+        "subset_quantiles": [
+          29498.0,
+          29498.0,
+          29498.0,
+          29498.0,
+          29498.0
+        ],
+        "ks_distance": 0.0
+      },
+      "fold_fraction": {
+        "param1": {
+          "source": 0.12547528517110265,
+          "subset": 0.125
+        },
+        "param2": {
+          "source": 0.1229404309252218,
+          "subset": 0.125
+        },
+        "param3": {
+          "source": 0.1267427122940431,
+          "subset": 0.125
+        },
+        "param4": {
+          "source": 0.1267427122940431,
+          "subset": 0.125
+        },
+        "param5": {
+          "source": 0.12167300380228137,
+          "subset": 0.125
+        },
+        "param6": {
+          "source": 0.1267427122940431,
+          "subset": 0.125
+        },
+        "param7": {
+          "source": 0.12420785804816223,
+          "subset": 0.125
+        },
+        "param8": {
+          "source": 0.12547528517110265,
+          "subset": 0.125
+        }
+      }
+    },
+    "test": {
+      "extent_x": {
+        "source_quantiles": [
+          2.8202099800109863,
+          3.0989600121974945,
+          3.17263001203537,
+          3.2503325641155243,
+          3.4516799449920654
+        ],
+        "subset_quantiles": [
+          2.8202099800109863,
+          3.104719966650009,
+          3.1780349612236023,
+          3.2402074933052063,
+          3.4201500415802
+        ],
+        "ks_distance": 0.06500000000000006
+      },
+      "extent_y": {
+        "source_quantiles": [
+          1.0873179957270622,
+          1.9549884165171534,
+          2.2130894884467125,
+          2.4335993006825447,
+          4.188689112663269
+        ],
+        "subset_quantiles": [
+          1.0873179957270622,
+          1.988111700862646,
+          2.202350988984108,
+          2.4335993006825447,
+          3.810184895992279
+        ],
+        "ks_distance": 0.050000000000000044
+      },
+      "extent_z": {
+        "source_quantiles": [
+          5.911999940872192,
+          6.727964997291565,
+          7.209450125694275,
+          7.695232510566711,
+          8.9721097946167
+        ],
+        "subset_quantiles": [
+          6.020740032196045,
+          6.795822560787201,
+          7.253355145454407,
+          7.697482407093048,
+          8.136320114135742
+        ],
+        "ks_distance": 0.07999999999999996
+      },
+      "surface_points": {
+        "source_quantiles": [
+          3682.0,
+          3682.0,
+          3682.0,
+          3682.0,
+          3682.0
+        ],
+        "subset_quantiles": [
+          3682.0,
+          3682.0,
+          3682.0,
+          3682.0,
+          3682.0
+        ],
+        "ks_distance": 0.0
+      },
+      "volume_points": {
+        "source_quantiles": [
+          29498.0,
+          29498.0,
+          29498.0,
+          29498.0,
+          29498.0
+        ],
+        "subset_quantiles": [
+          29498.0,
+          29498.0,
+          29498.0,
+          29498.0,
+          29498.0
+        ],
+        "ks_distance": 0.0
+      },
+      "fold_fraction": {
+        "param0": {
+          "source": 1.0,
+          "subset": 1.0
+        }
+      }
+    }
+  }
+}
