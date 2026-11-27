@@ -186,6 +186,39 @@ class ShapeNetCarSplitTests(unittest.TestCase):
 
 
 class ShapeNetCarComparisonTests(unittest.TestCase):
+    def test_upstream_log_normalization_matches_shared_convention(self):
+        from benchmarks.shapenet_car.evaluate_reference import normalization_from_log
+
+        normalization = normalization_from_log(
+            {"coef_norm": [[1] * 7, [2] * 7, [3] * 4, [4] * 4]}
+        )
+        np.testing.assert_array_equal(normalization["x_mean"], np.ones(7))
+        np.testing.assert_array_equal(normalization["y_std"], np.full(4, 4))
+        with self.assertRaises(ValueError):
+            normalization_from_log({"coef_norm": [[1], [2], [3], [4]]})
+
+    def test_runner_resolves_validation_mapping_without_test_leakage(self):
+        from benchmarks.shapenet_car.run import resolve_split_paths
+
+        splits = {
+            "train": ["param1/train"],
+            "validation": ["param2/validation"],
+            "test": ["param0/test"],
+        }
+        mapping = {
+            "param1/train": "training_data/param1/train",
+            "param2/validation": "training_data/param0/validation",
+            "param0/test": "test_data/param0/test",
+        }
+        result = resolve_split_paths(Path("dataset"), splits, mapping)
+        self.assertEqual(
+            result["validation"], [(Path("dataset/training_data"), "param0/validation")]
+        )
+        self.assertEqual(result["test"], [(Path("dataset/test_data"), "param0/test")])
+        mapping["param0/test"] = "training_data/param0/test"
+        with self.assertRaises(ValueError):
+            resolve_split_paths(Path("dataset"), splits, mapping)
+
     def test_loss_and_scores_use_reference_pressure_and_velocity_regions(self):
         targets = torch.tensor([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 2.0]])
         predictions = torch.tensor([[2.0, 0.0, 0.0, 999.0], [0.0, 0.0, 0.0, 3.0]])
@@ -204,6 +237,21 @@ class ShapeNetCarComparisonTests(unittest.TestCase):
         for kind in ("gnn", "local_transolver"):
             model = BenchmarkModel(kind, hidden_dim=16, num_layers=1)
             self.assertEqual(model(features, positions, edges).shape, (8, 4))
+
+    def test_hybrid_slice_uses_three_dimensional_edges(self):
+        from benchmarks.shapenet_car.training import hybrid_edge_features
+
+        positions = torch.tensor([[0.0, 0.0, 0.0], [1.0, 2.0, 2.0]])
+        edges = torch.tensor([[0, 0], [1, 0]])
+        attributes = hybrid_edge_features(positions, edges)
+        self.assertEqual(attributes.shape, (2, 7))
+        torch.testing.assert_close(attributes[0, :3], positions[1] / 3)
+        torch.testing.assert_close(attributes[0, 4:], positions[1])
+        self.assertTrue(torch.isfinite(attributes).all())
+        model = BenchmarkModel("gnn_hybrid_slice", hidden_dim=16, num_layers=1)
+        predictions = model(torch.randn(2, 7), positions, edges)
+        self.assertEqual(predictions.shape, (2, 4))
+        self.assertTrue(torch.isfinite(predictions).all())
 
     def test_invalid_case_names_and_zero_norm_metrics(self):
         with self.assertRaises(ValueError):

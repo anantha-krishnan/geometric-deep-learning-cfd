@@ -42,6 +42,12 @@ def field_scores(predictions, targets, surface):
     }
 
 
+def hybrid_edge_features(positions, edge_index):
+    displacement = positions[edge_index[1]] - positions[edge_index[0]]
+    distance = displacement.norm(dim=1, keepdim=True).clamp_min(1e-12)
+    return torch.cat((displacement / distance, distance.log(), displacement), dim=1)
+
+
 class BenchmarkModel(nn.Module):
     def __init__(
         self,
@@ -64,7 +70,7 @@ class BenchmarkModel(nn.Module):
         num_heads = (
             num_heads if num_heads is not None else (8 if kind == "reference" else 4)
         )
-        if kind == "gnn":
+        if kind in ("gnn", "gnn_hybrid_slice"):
             from model import Milestone1_GNN
 
             self.model = Milestone1_GNN(
@@ -76,6 +82,8 @@ class BenchmarkModel(nn.Module):
                 use_global=True,
                 attention_tokens=32,
                 attention_heads=num_heads,
+                edge_dim=7 if kind == "gnn_hybrid_slice" else 0,
+                global_mixer="slice" if kind == "gnn_hybrid_slice" else "latent",
             )
         elif kind == "local_transolver":
             from benchmarks.transolver.model import Transolver
@@ -122,6 +130,13 @@ class BenchmarkModel(nn.Module):
     def forward(self, inputs, positions, edge_index=None):
         if self.kind == "reference":
             return self.model((SimpleNamespace(x=inputs, pos=positions), None))
-        if self.kind == "gnn" and edge_index is None:
+        if self.kind in ("gnn", "gnn_hybrid_slice") and edge_index is None:
             raise ValueError("The GNN requires mesh edges.")
-        return self.model(inputs, inputs.new_empty((len(inputs), 0)), edge_index)
+        edge_attr = (
+            hybrid_edge_features(positions, edge_index)
+            if self.kind == "gnn_hybrid_slice"
+            else None
+        )
+        return self.model(
+            inputs, inputs.new_empty((len(inputs), 0)), edge_index, edge_attr
+        )

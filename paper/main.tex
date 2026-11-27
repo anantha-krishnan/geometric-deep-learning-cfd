@@ -1258,6 +1258,49 @@ Transolver obtained lower mean relative lift error than the GNN (0.7813 versus
 every metric. The saved per-case predictions contain pressure only, so a full
 recomputation of velocity, viscosity and force metrics requires renewed inference.
 
+\subsection{Reduced ShapeNet-Car: Upstream Reference}
+The authors' full-width, eight-layer Transolver was trained for 150 epochs on
+96 cars, with 16 validation cars and 40 held-out test cars from the original
+fold~0. The final checkpoint has 3,860,804 parameters. The reported training
+time was 5,675.77\,s, excluding data preprocessing and held-out evaluation.
+The upstream code swaps the names of the pressure and velocity losses when
+logging; its reported validation value of 0.13904 is pressure MSE plus half
+velocity MSE, while the actual training objective recomputed on the validation
+cars is 0.08532. These quantities must not be directly compared with a
+validation loss using the intended objective.
+
+\begin{table}[t]
+\centering
+\caption{Reduced ShapeNet-Car, full-size upstream Transolver: mean and median
+per-case relative $L_2$ on 40 held-out cars.}
+\label{tab:shapenet_reduced}
+\begin{tabular}{lrr}
+\toprule
+Metric & Mean & Median \\
+\midrule
+Exterior velocity & 0.03823 & 0.03516 \\
+Surface pressure & 0.11794 & 0.11753 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Each value is the average or median of per-car $\lVert y-\hat y\rVert_2 /
+\lVert y\rVert_2$ in dataset units, with velocity restricted to exterior nodes
+and pressure to surface nodes. The worst car has errors 0.07710 and 0.21048,
+respectively (Fig.~\ref{fig:shapenet_worst}). These are not established to
+match the published aggregation. This single reduced-data run is not directly
+comparable to the paper's 789-training-car result; drag and whole-domain
+pressure error were not evaluated, and no hybrid comparison is available yet.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{volume_results/shapenet_car_reduced/full_transolver_evaluation_20261127/13d090612aec3d80ca92a4cdad802b45.png}
+\caption{Worst held-out reduced ShapeNet-Car case: CFD surface pressure,
+upstream Transolver prediction, and absolute error. Pressure scales are shared;
+surface nodes overlap in the two-dimensional projections.}
+\label{fig:shapenet_worst}
+\end{figure*}
+
 % =============================================================================
 \section{Discussion}
 \label{sec:discussion}
