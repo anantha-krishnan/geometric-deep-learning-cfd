@@ -192,6 +192,57 @@ class SliceGlobalAttention(nn.Module):
         return output
 
 
+DOMAIN_KINDS = {
+    f"gnn_hybrid_slice_{name}": name
+    for name in ("volume", "surface", "nearwall", "geometry")
+}
+
+
+class DomainBranch(nn.Module):
+    """One single-mesh residual before the unchanged local/global backbone."""
+
+    def __init__(self, kind, width, dimension, edge_dim, heads):
+        super().__init__()
+        self.kind = kind
+        if kind in ("volume", "surface"):
+            self.operator = TransolverBlock(
+                width, 32 if kind == "volume" else 16, heads, mlp_ratio=2
+            )
+        elif kind == "nearwall":
+            self.operator = MessagePassingBlock(width, edge_dim)
+        elif kind == "geometry":
+            self.operator = nn.Sequential(
+                nn.Linear(dimension, width), nn.ReLU(), nn.Linear(width, width)
+            )
+        else:
+            raise ValueError(f"Unknown domain branch: {kind}")
+        self.broadcast = nn.Linear(width, width)
+
+    def forward(self, hidden, positions, surface, distance_ratio, edges, features):
+        if not surface.any() or surface.all():
+            raise ValueError(
+                "Domain branches require wall and exterior nodes in each mesh sample."
+            )
+        if self.kind == "geometry":
+            points = positions[surface]
+            shape = self.operator(points - points.mean(dim=0)).amax(dim=0)
+            return hidden + self.broadcast(shape)
+        mask = ~surface if self.kind == "volume" else surface
+        if self.kind == "nearwall":
+            mask = surface | (distance_ratio <= 0.02)
+            keep = mask[edges].all(dim=0)
+            local_ids = mask.long().cumsum(0) - 1
+            update = self.operator(
+                hidden[mask], local_ids[edges[:, keep]], features[keep]
+            )
+        else:
+            update = self.operator(hidden[mask].unsqueeze(0)).squeeze(0)
+        delta = update - hidden[mask]
+        result = hidden + self.broadcast(delta.mean(dim=0))
+        result[mask] = result[mask] + delta
+        return result
+
+
 class Milestone1_GNN(nn.Module):
     def __init__(
         self,
@@ -208,6 +259,8 @@ class Milestone1_GNN(nn.Module):
         activation="default",
         aggregation="sum",
         global_mixer="latent",
+        domain_kind=None,
+        position_dim=None,
     ):
         super().__init__()
         if activation not in ("default", "tanh"):
@@ -262,9 +315,33 @@ class Milestone1_GNN(nn.Module):
             else []
         )
 
-    def forward(self, geom, params, edge_index, edge_attr=None, batch_idx=None):
+        self.domain = (
+            DomainBranch(
+                domain_kind, hidden_dim, position_dim, edge_dim, attention_heads
+            )
+            if domain_kind
+            else None
+        )
+
+    def forward(
+        self,
+        geom,
+        params,
+        edge_index,
+        edge_attr=None,
+        batch_idx=None,
+        domain_inputs=None,
+    ):
         x = torch.cat([geom, params], dim=-1)
         h = self.encoder(x)
+        if self.domain is not None:
+            if domain_inputs is None or (
+                batch_idx is not None and batch_idx.unique().numel() != 1
+            ):
+                raise ValueError(
+                    "A domain branch expects one mesh and explicit domain inputs."
+                )
+            h = self.domain(h, *domain_inputs, edge_index, edge_attr)
         if batch_idx is None:
             batch_idx = torch.zeros(h.size(0), dtype=torch.long, device=h.device)
         for index, layer in enumerate(self.layers):

@@ -22,19 +22,17 @@ def build_features(
     case = parse_case(name)
     points = np.asarray(points)[:, :2]
     velocity = np.asarray(velocity)[:, :2]
-    surface = velocity[:, 0] == 0
     surface_positions = np.asarray(surface_points)[:, :2]
     surface_normals = np.asarray(surface_normals)[:, :2]
     surface_lookup = {
         tuple(point): index for index, point in enumerate(surface_positions)
     }
-    indices = np.array(
-        [surface_lookup.get(tuple(point), -1) for point in points[surface]]
-    )
-    if np.any(indices < 0):
+    indices = np.array([surface_lookup.get(tuple(point), -1) for point in points])
+    surface = indices >= 0
+    if np.unique(indices[surface]).size != len(surface_lookup):
         raise ValueError(f"Surface nodes do not match the internal mesh for {name}.")
     normals = np.zeros_like(velocity)
-    normals[surface] = -surface_normals[indices]
+    normals[surface] = -surface_normals[indices[surface]]
     angle = np.deg2rad(case["angle"])
     inlet = np.broadcast_to(
         np.array([np.cos(angle), np.sin(angle)]) * case["speed"], points.shape
@@ -49,6 +47,10 @@ def build_features(
         raise ValueError(f"Invalid node fields or missing surface for {name}.")
     return {
         "name": name,
+        "distance_ratio": (
+            np.abs(np.asarray(distance).reshape(-1))
+            / np.ptp(surface_positions[:, 0]).clip(1e-8)
+        ).astype(np.float32),
         "pos": points.astype(np.float32),
         "x": inputs.astype(np.float32),
         "y": targets.astype(np.float32),

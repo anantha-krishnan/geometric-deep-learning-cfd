@@ -186,6 +186,33 @@ class ShapeNetCarSplitTests(unittest.TestCase):
 
 
 class ShapeNetCarComparisonTests(unittest.TestCase):
+    def test_reference_comparison_accepts_hybrid_prediction(self):
+        from benchmarks.shapenet_car.compare_reference import plot_comparison
+
+        case = {
+            "positions": np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]),
+            "surface": np.array([True, True]),
+            "actual": np.array([[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 2.0]]),
+            "prediction": np.array([[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 2.0]]),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "comparison.png"
+            plot_comparison(case, case, "case", output, additional=case)
+            self.assertTrue(output.is_file())
+
+    def test_reference_comparison_rejects_mismatched_cases(self):
+        from benchmarks.shapenet_car.compare_reference import check_matching_cases
+
+        case = {
+            "positions": np.array([[0.0, 0.0, 0.0]]),
+            "surface": np.array([True]),
+            "actual": np.array([[0.0, 0.0, 0.0, 1.0]]),
+        }
+        check_matching_cases(case, dict(case))
+        changed = {**case, "actual": np.array([[0.0, 0.0, 0.0, 2.0]])}
+        with self.assertRaises(ValueError):
+            check_matching_cases(case, changed)
+
     def test_upstream_log_normalization_matches_shared_convention(self):
         from benchmarks.shapenet_car.evaluate_reference import normalization_from_log
 

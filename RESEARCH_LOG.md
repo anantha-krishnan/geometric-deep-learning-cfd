@@ -775,3 +775,136 @@ Command: `uv run python -u refine_volume.py --model NAME CHECKPOINT VARIANT --ou
 - CFD and prediction pressure use common per-case color scales; inspected [first held-out case](volume_results/shapenet_car_reduced/full_transolver_evaluation_20261127/10e15fd62309a13d1812324a4c0d910.png) and [worst case](volume_results/shapenet_car_reduced/full_transolver_evaluation_20261127/13d090612aec3d80ca92a4cdad802b45.png). Images show projected surface points, which can overlap in projection; the error colors use their own scale. Actual and predicted 3D fields and per-case scores are in [evaluation results](volume_results/shapenet_car_reduced/full_transolver_evaluation_20261127/metrics.json). No whole-domain pressure error is possible because exterior pressure is a placeholder, and drag was not calculated.
 - Reproduce in a new output directory: `uv run python -m benchmarks.shapenet_car.evaluate_reference --data public_benchmarks/shapenet_car_reduced_96_16_40 --splits benchmarks/shapenet_car/reduced_splits_96_16_40.json --run "volume_results/shapenet_car_reduced/full_ transolver_150epoch/150_0.5" --output volume_results/shapenet_car_reduced/reference_evaluation_new`. The evaluator downloads SHA-256-verified source from upstream revision `75e0f67643806a81cd1d3f6adc88dd8c02416fe7` and restricts checkpoint deserialization to the required classes. Local evaluation used an NVIDIA RTX PRO 4000 Blackwell laptop GPU.
 - This is one reduced-data run, not the paper's 789-training/100-test protocol; the 40 cases are now inspected. No trained ShapeNet hybrid or small-Transolver result is available yet, so there is no head-to-head comparison or promotion. Record the same test protocol for future comparisons and avoid tuning on these test results.
+
+## 2026-11-27 - Reduced-Width Upstream Transolver: Held-Out Comparison
+
+- Evaluated the user's final 150-epoch checkpoint from `volume_results/shapenet_car_reduced/shapenet_transolver_small_150/metrics/Transolver/0/150_0.5/`, using the same fixed 40 held-out cars and evaluation code as the full-width reference. Checkpoint has 26,736 parameters, width 32, three layers, four heads and 32 slices; full-width reference has 3,860,804 parameters, width 256, eight layers and eight heads. Both logs record Adam learning rate 0.001, batch size 1 and 150 epochs. Normalization coefficients match exactly. Small-run notebook specifies seed 2026; the full-run notebook did not explicitly specify a seed. Both are final, not validation-selected checkpoints.
+- Training time recorded in the upstream logs: small 622.93 s, full 5,675.77 s. Hardware and environment for the two Kaggle training runs are not established by the logs, so these numbers are not a controlled speed comparison. Local inference for both was on the NVIDIA RTX PRO 4000 Blackwell laptop GPU.
+
+| Mean per-car relative L2, 40 held-out cars | Full Transolver | Small Transolver | Small wins |
+| --- | ---: | ---: | ---: |
+| Surface pressure | 0.117936 | 0.148840 | 2/40 |
+| Exterior velocity | 0.038228 | 0.060045 | 1/40 |
+
+- Median pressure relative L2: full 0.117527, small 0.139761. Median velocity: full 0.035160, small 0.060033. Small-model mean errors are 26.2% and 57.1% higher, respectively. These are averages of per-car relative L2 ratios, not pooled relative L2 or the paper's confirmed aggregation. No drag or whole-domain pressure metric is available.
+- Paired inspection: case names, positions, surface masks, and actual fields matched exactly across all 40 saved prediction pairs. Common-scale CFD/full/small pressure images with matched error scales: [pressure regression](volume_results/shapenet_car_reduced/full_vs_small_20261127/1724ae84377e0b9ba6c2c95b41a5446d.png) and [pressure improvement](volume_results/shapenet_car_reduced/full_vs_small_20261127/1213742aa7815fd0e23d60a1b706b44f.png). Surface nodes overlap in 2D projections; pressure scale is based on CFD extrema, so model values outside that range clip. All 40 images and [small-run metrics](volume_results/shapenet_car_reduced/small_transolver_evaluation_20261127/metrics.json) are retained.
+- Reproduce plots: `uv run python -m benchmarks.shapenet_car.compare_reference --reference volume_results/shapenet_car_reduced/full_transolver_evaluation_20261127 --candidate volume_results/shapenet_car_reduced/small_transolver_evaluation_20261127 --output volume_results/shapenet_car_reduced/full_vs_small_new`. The helper checks case identity and CFD values before plotting; a focused test verifies the mismatch guard.
+- Interpretation: reducing the upstream model's width, depth and head count together is associated with lower accuracy on this split. It does not isolate a causal factor, establish convergence or settle architecture ranking; initialization and case order also differ. This is one seed per run on an already inspected reduced test set. The small Transolver matches the hybrid's width/layers/heads/slices but not its 49,360 parameters or mesh-edge message passing. No trained ShapeNet hybrid result has been supplied and no model is promoted.
+
+## 2026-11-27 - ShapeNet-Car Hybrid Slice GNN: Completed Run
+
+- Inspected the user's `volume_results/shapenet_car_reduced/shapenet_car_gnn_hybrid_slice_150epoch/`: 49,360 parameters, 150 epochs and 150 history rows; both the final and lowest recorded validation checkpoint are epoch 150, with validation objective 0.0990284. Seed 2026, 96/16/40 split, Tesla T4, torch 2.11.0+cu130, elapsed training 3,014.39 s, peak allocated GPU memory 1.925 GiB. Memory and elapsed training comparisons are not controlled unless hardware and measurement boundaries match. Both Transolvers evaluated their final checkpoints.
+- The run configuration's original train/validation/test lists match the manifest exactly. The hybrid's train-only normalization closely matches, but is not bit-identical to, the full Transolver log: maximum absolute differences for x mean/std and y mean/std are 1.061e-5, 8.644e-8, 3.263e-7 and 6.871e-7. All 40 saved positions, surface masks and actual fields are exactly identical across the three evaluations. Hybrid reported field scores reproduce from its NPZ arrays within 3e-8. Reloaded the final checkpoint locally and reproduced one saved prediction with max absolute difference 7.63e-5 across GPUs.
+
+| Model | Parameters | Mean surface pressure relative L2 | Median surface pressure relative L2 | Mean exterior velocity relative L2 | Median exterior velocity relative L2 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Full Transolver | 3,860,804 | 0.117936 | 0.117527 | 0.038228 | 0.035160 |
+| Reduced Transolver | 26,736 | 0.148840 | 0.139761 | 0.060045 | 0.060033 |
+| Hybrid slice GNN | 49,360 | 0.116669 | 0.111625 | 0.050539 | 0.049491 |
+
+- Hybrid versus reduced Transolver: mean pressure/velocity relative L2 is lower by 21.6%/15.8%, with 38/40 and 37/40 paired case wins. Hybrid versus full: mean pressure is lower by 1.1%, but velocity is higher by 32.2%; hybrid wins 24/40 pressure and 2/40 velocity cases. Paired Wilcoxon p-values for hybrid versus full are 0.428 (pressure) and 1.38e-8 (velocity); versus reduced they are 1.27e-11 and 2.00e-10. These are exploratory per-car tests, uncorrected for multiple comparisons, not evidence across training seeds.
+- For a common validation-objective definition, full Transolver, reduced Transolver and hybrid respectively give 0.085318, 0.138454 and 0.099028. The first two were recomputed on the 16 validation cars because upstream swaps loss labels when logging; the third is saved in the hybrid history. The upstream logged values are not directly comparable.
+- Shared-scale CFD/full/reduced/hybrid pressure and absolute-error images for all 40 test cars: [hybrid pressure gain](volume_results/shapenet_car_reduced/full_small_hybrid_20261127/1213742aa7815fd0e23d60a1b706b44f.png) and [hybrid pressure regression](volume_results/shapenet_car_reduced/full_small_hybrid_20261127/1736b8494abf38ba4eb766e5a46fceab.png). Surface nodes can overlap in 2D projections; pressure values outside CFD extrema clip. Exterior pressure has no CFD labels, so these plots do not report whole-domain pressure errors. Drag is not evaluated.
+- Reproduce plots: `uv run python -m benchmarks.shapenet_car.compare_reference --reference volume_results/shapenet_car_reduced/full_transolver_evaluation_20261127 --candidate volume_results/shapenet_car_reduced/small_transolver_evaluation_20261127 --additional volume_results/shapenet_car_reduced/shapenet_car_gnn_hybrid_slice_150epoch/evaluation --output volume_results/shapenet_car_reduced/full_small_hybrid_new`.
+- Interpretation: the hybrid is promising for pressure and beats the smaller reference on both measured fields, but it does not match the full reference on velocity. The small Transolver shares width/layers/heads/slices with the hybrid, not parameter count, mesh connectivity or architecture. One training run per model, differing shuffle/initialization and an already inspected reduced test set preclude a robust or causal architecture claim. No model is promoted; repeat seeds and evaluate on unseen data before selecting a model.
+
+## 2026-11-28 - Four isolated domain branches
+
+Each `gnn_hybrid_slice_{volume,surface,nearwall,geometry}` adds exactly one module before the unchanged hybrid backbone. This is an additive ablation, not four standalone predictors or a cumulative four-stream model. All nodes still receive outputs. Capacity is not matched. Volume/surface process exterior/wall hidden states respectively with an extra 32/16-slice Transolver block; its residual is applied locally and its projected mean is shared with every node. Nearwall uses one message-passing layer on induced mesh edges with the same local/global exchange. Geometry max-pools an MLP over centered wall coordinates and conditions every node; no inlet, targets, ring ordering, CAD-only inference, or three-node pooling. AirfRANS geometry sees sampled wall points, not necessarily the complete outline.
+
+Nearwall includes all wall nodes and exterior nodes within 0.02 times the full body's streamwise extent. Raw distances precede feature normalization. AirfRANS uses the implicit distance; ShapeNet uses distance to the nearest surface vertex, not the exact triangle distance. This is a geometric proxy, not a Reynolds-number or wall-shear model. Before sampling, the first held-out airfoil includes 94,518/178,026 exterior nodes plus 1,007 wall nodes; the car includes 773/28,504 plus 3,682 wall nodes. A fixed percentile would control cost but would not identify a fixed physical band.
+
+Matched CUDA smoke runs, seed 2026, two training cases, one validation case, one held-out case, one epoch. Results in `volume_results/domain_pilots_20261128`. These verify execution, **not** suction-peak recovery or model ranking. AirfRANS MSE is normalized, not Pa. Car exterior pressure and direct wall-shear labels are unavailable.
+
+| Extra branch | Air volume pressure MSE | Air wall pressure MSE | Car exterior velocity rel. L2 | Car wall pressure rel. L2 |
+|---|---:|---:|---:|---:|
+| None | 2.6781 | 2.2397 | 0.3328 | 0.9155 |
+| Volume | 2.7333 | 2.2820 | 0.3369 | 0.8979 |
+| Surface | 2.8686 | 2.3609 | 0.3334 | 0.8918 |
+| Nearwall | 2.8593 | 2.5290 | 0.3504 | 0.8460 |
+| Geometry | 2.7733 | 2.3180 | 0.3587 | 0.8586 |
+
+Run one full arm at a time from the repository root (PowerShell; set `$arm` to the desired name and use fresh output directories):
+
+```powershell
+$arm = 'gnn_hybrid_slice_surface'
+$air = "volume_results/branch_runs/airfrans/$arm"
+uv run python -m benchmarks.airfrans.train --models $arm --epochs 398 --splits benchmarks/airfrans/kaggle_splits_96_16_40.json --output $air
+uv run python -m benchmarks.airfrans.evaluate --splits benchmarks/airfrans/kaggle_splits_96_16_40.json --run-dir $air
+uv run python -m benchmarks.shapenet_car.run --model $arm --epochs 150 --splits benchmarks/shapenet_car/reduced_splits_96_16_40.json --data public_benchmarks/shapenet_car_reduced_96_16_40 --output "volume_results/branch_runs/car/$arm"
+```
+
+Use the unchanged `gnn_hybrid_slice` as the paired control; `gnn_rel` remains a secondary AirfRANS comparator, not a matched branch toggle. Compare per-case results as well as means, including the 14.684-degree airfoil, without selecting hyperparameters on those test cases. The force, wake, mesh-free and uncertainty proposals are separate experiments, not part of this ablation.
+
+### AirfRANS surface branch: first full-budget result
+
+Final epoch 398, seed 2026, 96 train / 16 validation / 40 held-out cases, 32k nodes per pass. Training took 2,084 s excluding data loading; final validation objective 0.06472. The table compares the saved hybrid slice control with the added surface branch on the same 40 case IDs.
+
+| Held-out metric | Hybrid slice | + Surface | Cases improved |
+|---|---:|---:|---:|
+| Mean volume pressure MSE | 0.04081 | 0.02803 | 26/40 |
+| Mean wall pressure MSE | 0.29265 | 0.06030 | 22/40 |
+| Mean relative lift error | 0.80444 | 0.50738 | 23/40 |
+| Lift Spearman | 0.89006 | 0.94709 | n/a |
+
+On the 14.684-degree case, normalized wall MSE fell from 9.95782 to 1.00417. The minimum wall pressure in dataset units was -41,841 for CFD, -61,546 for hybrid slice and -40,394 for hybrid + surface. Their respective x coordinates were 0.0005, -0.0001 and 0.0003. [Shared-scale held-out pressure comparison](volume_results/domain_ablation_20261128/airfrans_surface/evaluation/high_angle_paired.png).
+
+Excluding that case as a sensitivity check, mean wall MSE still fell from 0.04482 to 0.03610. Overall median wall MSE improved (0.00844 to 0.00671), but median volume MSE rose slightly (0.00623 to 0.00642). The surface arm met the outlier and mean volume screening targets, not a universal improvement. Single seed, extra parameters, different training hardware, and previously inspected test cases: repeat before promotion. [Full per-case metrics](volume_results/domain_ablation_20261128/airfrans_surface/evaluation/metrics.json).
+
+- Validation history: lowest recorded loss 0.06451 at epoch 380, versus 0.06472 at final epoch 398; only the final checkpoint was retained, so this is not a best-checkpoint evaluation. Peak allocated GPU memory was 485,663,744 bytes. Saved normalization arrays and the 40 case IDs match both comparator runs.
+- Secondary comparison against the epoch-361 `gnn_rel`: mean normalized volume/wall pressure MSE 0.05168/0.08511 versus 0.02803/0.06030; mean relative lift error 0.79818 versus 0.50738; lift Spearman 0.92927 versus 0.94709. The surface arm improves 38/40 volume, 31/40 wall, and 25/40 lift errors. These are exploratory paired case counts, not independent training replicates; `gnn_rel` has a different epoch count and architecture. At 14.684 degrees its wall MSE is 1.70565 versus 1.00416 for the surface arm.
+
+### AirfRANS near-wall branch: full-budget result
+
+- Final epoch 398, 96/16/40 split, seed 2026, 32k nodes. Training 2,047 s excluding data loading; final validation objective 0.07593, lowest recorded 0.07576 at epoch 385 (not retained). Peak allocated GPU memory 503,760,384 bytes. Identical normalization and test case IDs to control, surface and `gnn_rel`.
+- Mean normalized volume/wall pressure MSE 0.04431/0.05984; mean relative lift error 1.01212; lift Spearman 0.93734. Medians 0.00953/0.00908/0.09945. Against hybrid slice, improves 8/40 volume, 18/40 wall, 21/40 lift cases; against surface improves 8/40, 13/40, 20/40. Against `gnn_rel`, improves 29/40, 23/40, 22/40 respectively.
+- The 14.684-degree wall MSE is 0.45402 versus 1.00416 (surface), 1.70565 (`gnn_rel`), and 9.95782 (control). Excluding this case, near-wall mean wall MSE is 0.04973 versus 0.03610 for surface and 0.04482 for control. Its lower all-case wall mean is therefore outlier-sensitive; volume and mean lift regress versus both control and surface. The band is a geometric proxy and this is not a wall-shear measurement.
+- [Paired high-angle CFD and model plots](volume_results/domain_ablation_20261128/airfrans_nearwall/evaluation/high_angle_paired.png); [per-case metrics](volume_results/domain_ablation_20261128/airfrans_nearwall/evaluation/metrics.json). One seed, non-matched parameter counts and already-inspected cases limit conclusions.
+
+### AirfRANS geometry branch: full-budget result
+
+- Final epoch 398, 96/16/40 split, seed 2026, 32k nodes. Training 1,859 s excluding loading; final validation objective 0.06882, lowest recorded 0.06859 at epoch 385 (not retained). Peak allocated GPU memory 485,265,920 bytes. Normalization and 40 held-out case IDs match all prior arms.
+- Mean normalized volume/wall pressure MSE 0.02676/0.25021; mean relative lift error 0.49430; lift Spearman 0.95797. Medians 0.00600/0.00502/0.07947. Geometry improves 28/40 volume, 30/40 wall, 30/40 lift cases against hybrid slice; 21/40, 28/40, 24/40 against surface; 39/40, 33/40, 29/40 against `gnn_rel`.
+- The 14.684-degree wall MSE is 8.30695 versus 1.00416 for surface. Excluding that case yields mean wall MSE 0.04363 versus 0.03610 (surface) and 0.04482 (control). Geometry has the lowest mean volume pressure MSE so far and the lowest medians for wall pressure and lift, but its high-angle wall prediction is poor. [Paired high-angle pressure plot](volume_results/domain_ablation_20261128/airfrans_geometry/evaluation/high_angle_paired.png); [per-case metrics](volume_results/domain_ablation_20261128/airfrans_geometry/evaluation/metrics.json). Single-seed and test-set-reuse caveats apply.
+
+### AirfRANS extra volume slices: full-budget result
+
+- Final epoch 398, 96/16/40 split, seed 2026, 32k nodes. Training 2,336 s excluding loading; final validation objective 0.08020, also the lowest recorded. Peak allocated GPU memory 566,137,856 bytes. Normalization and 40 held-out case IDs match the control and previous runs.
+- Mean normalized volume/wall pressure MSE 0.05126/0.19477; mean relative lift error 0.62721; lift Spearman 0.90225. Medians 0.00673/0.00997/0.19261. Versus hybrid slice, improves 15/40 volume, 17/40 wall, 18/40 lift cases; versus surface improves 10/40, 15/40, 12/40; versus `gnn_rel` improves 35/40, 23/40, 15/40.
+- At 14.684 degrees, volume MSE 1.03425 versus control 0.52473 and wall MSE 5.43387 versus 9.95782. Excluding this case, wall mean is 0.06044 versus control 0.04482. Extra volume slicing is not supported by this one-seed screen. [Paired high-angle pressure plot](volume_results/domain_ablation_20261128/airfrans_volume/evaluation/high_angle_paired.png); [per-case metrics](volume_results/domain_ablation_20261128/airfrans_volume/evaluation/metrics.json).
+
+### ShapeNet-Car surface branch: full-budget result
+
+- Final epoch 150, 96/16/40 split and seed 2026; training 1,326 s excluding loading, peak allocated GPU memory 2,124,435,968 bytes. Final validation objective 0.10392, also the best recorded, versus 0.09903 for the saved hybrid control. Training hardware differs from the control, so elapsed time and memory are not controlled comparisons.
+- On the same 40 held-out cars and identical training normalization, mean wall pressure relative L2 0.11589 versus 0.11667 for control (28/40 wins); mean exterior velocity relative L2 0.04873 versus 0.05054 (27/40 wins). Medians pressure 0.10650 versus 0.11163; velocity 0.04727 versus 0.04949. The gains are small and the validation objective is worse, so this is not promotion evidence.
+- The comparison helper verified identical positions, surface masks and CFD values for each case. [Example CFD/control/surface plot](volume_results/domain_ablation_20261128/car_surface/comparison/10e15fd62309a13d1812324a4c0d910.png); [per-case metrics](volume_results/domain_ablation_20261128/car_surface/evaluation/metrics.json). Pressure is evaluated only on the wall; direct wall shear and exterior pressure are unavailable. One seed, capacity mismatch and previously inspected tests limit interpretation.
+
+### ShapeNet-Car near-wall branch: full-budget result
+
+- Final epoch 150, 96/16/40, seed 2026; training 1,254 s excluding loading, peak allocated GPU memory 2,175,949,312 bytes. Final validation objective 0.10621; best recorded 0.10607 at epoch 141, saved separately but not evaluated. The hybrid final validation objective was 0.09903.
+- Identical splits, case IDs and normalization to control and surface. Mean wall pressure relative L2 0.11762 versus 0.11667 control and 0.11589 surface; mean exterior velocity relative L2 0.05321 versus 0.05054 and 0.04873. Medians 0.11042 and 0.05201. Near-wall wins 18/40 pressure and 11/40 velocity cases against control, 14/40 and 9/40 against surface. This 2% geometric band and one-layer branch do not improve the screen.
+- [Example matched CFD/control/near-wall pressure plot](volume_results/domain_ablation_20261128/car_nearwall/comparison/10e15fd62309a13d1812324a4c0d910.png); [per-case metrics](volume_results/domain_ablation_20261128/car_nearwall/evaluation/metrics.json). All 40 plots check matching CFD and geometry. Single seed, differing training hardware and already-inspected tests limit conclusions; wall shear and exterior pressure are not measured.
+
+### ShapeNet-Car geometry branch: full-budget result
+
+- Final epoch 150, 96/16/40, seed 2026; training 1,184 s excluding loading, peak allocated GPU memory 2,118,183,936 bytes. Final validation objective 0.10215, the lowest recorded, versus 0.09903 for control. All split IDs and normalization arrays match the other car arms.
+- Mean wall pressure/exterior velocity relative L2 0.11564/0.05005 versus control 0.11667/0.05054 and surface 0.11589/0.04873. Medians 0.10752/0.05035. Geometry wins 23/40 pressure and 21/40 velocity cases against control, and 24/40 pressure and 12/40 velocity against surface. Small mean changes do not establish superiority.
+- [Example matched CFD/control/geometry pressure plot](volume_results/domain_ablation_20261128/car_geometry/comparison/10e15fd62309a13d1812324a4c0d910.png); [per-case metrics](volume_results/domain_ablation_20261128/car_geometry/evaluation/metrics.json). All 40 comparisons verify the positions, surface mask and CFD values. Single seed and previously inspected tests; exterior pressure and direct wall-shear labels unavailable.
+
+### ShapeNet-Car extra volume slices: full-budget result
+
+- Final epoch 150, 96/16/40, seed 2026; training 1,280 s excluding loading, peak allocated GPU memory 2,187,095,552 bytes. Final validation objective 0.10048, the lowest recorded, versus 0.09903 for control. All case IDs, split IDs and normalization arrays match the other car arms.
+- Mean wall pressure/exterior velocity relative L2 0.11599/0.04965 versus control 0.11667/0.05054 and surface 0.11589/0.04873. Medians 0.10484/0.04745. Volume wins 23/40 pressure and 26/40 velocity cases against control, and 20/40 and 16/40 against surface. Changes are small, and single-seed screening does not establish a winner.
+- [Example matched CFD/control/volume pressure plot](volume_results/domain_ablation_20261128/car_volume/comparison/10e15fd62309a13d1812324a4c0d910.png); [per-case metrics](volume_results/domain_ablation_20261128/car_volume/evaluation/metrics.json). All comparisons verify positions, masks and CFD values; no exterior pressure or direct wall-shear assessment is possible.
+
+### Summary: four independent branches
+
+| Model | Air volume pressure MSE | Air wall pressure MSE | Air mean lift relative error | Car wall pressure relative L2 | Car exterior velocity relative L2 |
+|---|---:|---:|---:|---:|---:|
+| Hybrid slice control | 0.04081 | 0.29265 | 0.80444 | 0.11667 | 0.05054 |
+| + Surface | 0.02803 | 0.06030 | 0.50738 | 0.11589 | 0.04873 |
+| + Nearwall | 0.04431 | 0.05984 | 1.01212 | 0.11762 | 0.05321 |
+| + Geometry | 0.02676 | 0.25021 | 0.49430 | 0.11564 | 0.05005 |
+| + Volume | 0.05126 | 0.19477 | 0.62721 | 0.11599 | 0.04965 |
+
+Air pressure MSE is normalized and the wall mean is highly sensitive to the 14.684-degree case. Surface is the strongest balanced AirfRANS screen; geometry improves many median/case-wise scores but fails on that high-angle wall case. On cars, surface has the lowest mean velocity and geometry the lowest mean pressure, by small margins, while all four validation objectives are worse than the control. This table uses one seed, unequal capacities, a different GPU for the historical controls, and previously examined test cases; repeat training on independent seeds and reserve new tests before drawing conclusions. The car dataset's reduced meshes do not establish feasibility for multi-million-node CFD meshes.

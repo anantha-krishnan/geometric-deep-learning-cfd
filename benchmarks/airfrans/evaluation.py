@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 from benchmarks.airfrans.data import induced_subgraph
+from model import DOMAIN_KINDS
 
 
 def pressure_scores(predictions, targets, surface):
@@ -28,7 +29,15 @@ def predict_full(model, case, statistics, sample_size, seed, device):
         positions = torch.as_tensor(case["pos"][indices], device=device)
         if getattr(model, "uses_graph", False):
             edge_index = induced_subgraph(case["edge_index"], indices, count).to(device)
-            prediction = model(inputs, positions, edge_index)
+            domain = ()
+            if getattr(model, "kind", None) in DOMAIN_KINDS:
+                domain = (
+                    tuple(
+                        torch.as_tensor(case[field][indices], device=device)
+                        for field in ("surface", "distance_ratio")
+                    ),
+                )
+            prediction = model(inputs, positions, edge_index, *domain)
         else:
             prediction = model(inputs, positions)
         total[indices] += prediction.cpu().numpy()

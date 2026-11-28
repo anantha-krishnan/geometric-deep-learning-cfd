@@ -68,6 +68,9 @@ def build_case(volume_points, velocity, surface_points, pressure, surface_normal
     )
     return {
         "pos": positions.astype(np.float32),
+        "distance_ratio": (distances / np.ptp(surface_points[:, 0]).clip(1e-8)).astype(
+            np.float32
+        ),
         "x": np.column_stack((positions, distances, directions)).astype(np.float32),
         "y": targets.astype(np.float32),
         "surface": surface,

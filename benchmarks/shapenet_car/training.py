@@ -8,6 +8,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from model import DOMAIN_KINDS
+
 
 def field_loss(predictions, targets, surface, pressure_weight=0.5):
     if not surface.any() or surface.all():
@@ -70,7 +72,7 @@ class BenchmarkModel(nn.Module):
         num_heads = (
             num_heads if num_heads is not None else (8 if kind == "reference" else 4)
         )
-        if kind in ("gnn", "gnn_hybrid_slice"):
+        if kind in ("gnn", "gnn_hybrid_slice", *DOMAIN_KINDS):
             from model import Milestone1_GNN
 
             self.model = Milestone1_GNN(
@@ -82,8 +84,10 @@ class BenchmarkModel(nn.Module):
                 use_global=True,
                 attention_tokens=32,
                 attention_heads=num_heads,
-                edge_dim=7 if kind == "gnn_hybrid_slice" else 0,
-                global_mixer="slice" if kind == "gnn_hybrid_slice" else "latent",
+                edge_dim=0 if kind == "gnn" else 7,
+                global_mixer="latent" if kind == "gnn" else "slice",
+                domain_kind=DOMAIN_KINDS.get(kind),
+                position_dim=3,
             )
         elif kind == "local_transolver":
             from benchmarks.transolver.model import Transolver
@@ -127,16 +131,29 @@ class BenchmarkModel(nn.Module):
         else:
             raise ValueError(f"Unknown ShapeNet-Car model: {kind}")
 
-    def forward(self, inputs, positions, edge_index=None):
+    def forward(self, inputs, positions, edge_index=None, domain=None):
         if self.kind == "reference":
             return self.model((SimpleNamespace(x=inputs, pos=positions), None))
-        if self.kind in ("gnn", "gnn_hybrid_slice") and edge_index is None:
+        if (
+            self.kind in ("gnn", "gnn_hybrid_slice", *DOMAIN_KINDS)
+            and edge_index is None
+        ):
             raise ValueError("The GNN requires mesh edges.")
         edge_attr = (
             hybrid_edge_features(positions, edge_index)
-            if self.kind == "gnn_hybrid_slice"
+            if self.kind in ("gnn_hybrid_slice", *DOMAIN_KINDS)
             else None
         )
+        if self.kind in DOMAIN_KINDS:
+            if domain is None:
+                raise ValueError("Missing wall mask and distance ratio.")
+            return self.model(
+                inputs,
+                inputs.new_empty((len(inputs), 0)),
+                edge_index,
+                edge_attr,
+                domain_inputs=(positions, *domain),
+            )
         return self.model(
             inputs, inputs.new_empty((len(inputs), 0)), edge_index, edge_attr
         )

@@ -1271,17 +1271,19 @@ validation loss using the intended objective.
 
 \begin{table}[t]
 \centering
-\caption{Reduced ShapeNet-Car, full-size upstream Transolver: mean and median
-per-case relative $L_2$ on 40 held-out cars.}
+\caption{Reduced ShapeNet-Car: mean and median per-case relative $L_2$ on 40
+held-out cars.}
 \label{tab:shapenet_reduced}
-\begin{tabular}{lrr}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrrrrrr}
 \toprule
-Metric & Mean & Median \\
+Metric & Full mean & Full median & Small mean & Small median & Hybrid mean & Hybrid median \\
 \midrule
-Exterior velocity & 0.03823 & 0.03516 \\
-Surface pressure & 0.11794 & 0.11753 \\
+Exterior velocity & 0.03823 & 0.03516 & 0.06005 & 0.06003 & 0.05054 & 0.04949 \\
+Surface pressure & 0.11794 & 0.11753 & 0.14884 & 0.13976 & 0.11667 & 0.11163 \\
 \bottomrule
 \end{tabular}
+}
 \end{table}
 
 Each value is the average or median of per-car $\lVert y-\hat y\rVert_2 /
@@ -1290,7 +1292,19 @@ and pressure to surface nodes. The worst car has errors 0.07710 and 0.21048,
 respectively (Fig.~\ref{fig:shapenet_worst}). These are not established to
 match the published aggregation. This single reduced-data run is not directly
 comparable to the paper's 789-training-car result; drag and whole-domain
-pressure error were not evaluated, and no hybrid comparison is available yet.
+pressure error were not evaluated.
+The small upstream model has width 32, three layers, four heads, 32 slices and
+26,736 parameters; its mean pressure and velocity errors are 26.2\% and 57.1\%
+higher than the full model. It improves pressure on two and velocity on one of
+the 40 cars. Model dimensions and random initialization differ together, and
+the full run did not specify a seed; no causal isolation is claimed. A shared
+scale comparison is shown in Fig.~\ref{fig:shapenet_small}. A hybrid slice GNN
+with 49,360 parameters, the same nominal width, depth, heads and slices as the
+small Transolver, and additional mesh message passing improves on that small
+model on 38/40 pressure and 37/40 velocity cases. Against the full model it
+wins 24/40 pressure and 2/40 velocity cases; its mean pressure error is 1.1\%
+lower and velocity error 32.2\% higher. This is one run per architecture on an
+already inspected reduced split, not a parameter-matched or causal comparison.
 
 \begin{figure*}[t]
 \centering
@@ -1299,6 +1313,25 @@ pressure error were not evaluated, and no hybrid comparison is available yet.
 upstream Transolver prediction, and absolute error. Pressure scales are shared;
 surface nodes overlap in the two-dimensional projections.}
 \label{fig:shapenet_worst}
+\end{figure*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{volume_results/shapenet_car_reduced/full_vs_small_20261127/1724ae84377e0b9ba6c2c95b41a5446d.png}
+\caption{Held-out reduced ShapeNet-Car case: CFD, full and small upstream
+Transolver surface pressure and absolute errors. Pressure and error scales are
+shared within each group; model values beyond CFD extrema clip. Surface points
+overlap in the projected views.}
+\label{fig:shapenet_small}
+\end{figure*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{volume_results/shapenet_car_reduced/full_small_hybrid_20261127/1213742aa7815fd0e23d60a1b706b44f.png}
+\caption{Held-out ShapeNet-Car case: CFD, full and small Transolver and hybrid
+GNN surface pressure with shared scales and absolute errors. Projected surface
+nodes can overlap; predictions outside CFD pressure extrema clip.}
+\label{fig:shapenet_hybrid}
 \end{figure*}
 
 % =============================================================================

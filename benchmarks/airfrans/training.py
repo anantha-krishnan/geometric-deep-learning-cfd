@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
+from model import DOMAIN_KINDS
+
 
 def positional_features(points, reference_size=8):
     grid_x = torch.linspace(
@@ -39,6 +41,7 @@ GNN_KINDS = {
     "gnn_rel": ("sum", "relative", "latent"),
     "gnn_hybrid": ("sum", "hybrid", "latent"),
     "gnn_hybrid_slice": ("sum", "hybrid", "slice"),
+    **dict.fromkeys(DOMAIN_KINDS, ("sum", "hybrid", "slice")),
 }
 MODEL_KINDS = ("reference", "local", *GNN_KINDS)
 
@@ -94,6 +97,8 @@ class BenchmarkModel(nn.Module):
                 attention_heads=4,
                 aggregation=aggregation,
                 global_mixer=global_mixer,
+                domain_kind=DOMAIN_KINDS.get(kind),
+                position_dim=2,
             )
         elif kind == "reference":
             if reference_path is None:
@@ -125,7 +130,7 @@ class BenchmarkModel(nn.Module):
         else:
             raise ValueError(f"Unknown model kind: {kind}")
 
-    def forward(self, inputs, positions, edge_index=None):
+    def forward(self, inputs, positions, edge_index=None, domain=None):
         if self.kind == "reference":
             return self.model(SimpleNamespace(x=inputs, pos=positions))
         if self.uses_graph:
@@ -139,6 +144,13 @@ class BenchmarkModel(nn.Module):
                 edge_attr = hybrid_edge_features(positions, edge_index)
             else:
                 edge_attr = None
-            return self.model(inputs, params, edge_index, edge_attr, batch_idx)
+            return self.model(
+                inputs,
+                params,
+                edge_index,
+                edge_attr,
+                batch_idx,
+                (positions, *domain) if domain is not None else None,
+            )
         inputs = torch.cat((inputs, positional_features(positions)), dim=1)
         return self.model(inputs, inputs.new_empty((len(inputs), 0)))

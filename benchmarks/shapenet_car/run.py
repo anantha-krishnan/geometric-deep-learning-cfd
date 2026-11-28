@@ -16,6 +16,7 @@ import torch
 from benchmarks.airfrans.data import fit_normalization, normalize_case
 from benchmarks.shapenet_car.data import load_case
 from benchmarks.shapenet_car.training import BenchmarkModel, field_loss, field_scores
+from model import DOMAIN_KINDS
 
 
 def resolve_split_paths(root, splits, mapping):
@@ -47,6 +48,7 @@ def tensors(case, device):
         torch.as_tensor(case["y"], device=device),
         torch.as_tensor(case["surface"], device=device),
         case["edge_index"].to(device),
+        torch.as_tensor(case["distance_ratio"], device=device),
     )
 
 
@@ -55,15 +57,17 @@ def validation_loss(model, cases, device):
     losses = []
     with torch.no_grad():
         for case in cases:
-            inputs, positions, targets, surface, edges = tensors(case, device)
+            inputs, positions, targets, surface, edges, ratio = tensors(case, device)
             losses.append(
-                field_loss(model(inputs, positions, edges), targets, surface).item()
+                field_loss(
+                    model(inputs, positions, edges, (surface, ratio)), targets, surface
+                ).item()
             )
     return float(np.mean(losses))
 
 
 def train(training, validation, args, device, output):
-    model = BenchmarkModel("gnn_hybrid_slice").to(device)
+    model = BenchmarkModel(args.model).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
@@ -81,11 +85,13 @@ def train(training, validation, args, device, output):
         model.train()
         losses = []
         for index in rng.permutation(len(training)):
-            inputs, positions, targets, surface, edges = tensors(
+            inputs, positions, targets, surface, edges, ratio = tensors(
                 training[index], device
             )
             optimizer.zero_grad(set_to_none=True)
-            loss = field_loss(model(inputs, positions, edges), targets, surface)
+            loss = field_loss(
+                model(inputs, positions, edges, (surface, ratio)), targets, surface
+            )
             if not torch.isfinite(loss):
                 raise ValueError(f"Non-finite training loss at epoch {epoch}.")
             loss.backward()
@@ -115,7 +121,7 @@ def train(training, validation, args, device, output):
     return model
 
 
-def plot_pressure(case, prediction, destination):
+def plot_pressure(case, prediction, destination, label="GNN hybrid slice"):
     mask = case["surface"]
     positions = case["pos"][mask]
     actual = case["y"][mask, 3]
@@ -123,9 +129,7 @@ def plot_pressure(case, prediction, destination):
     low, high = float(actual.min()), float(actual.max())
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
     for row, axes_indices in enumerate(((0, 1), (0, 2))):
-        for column, (values, title) in enumerate(
-            ((actual, "CFD"), (predicted, "GNN hybrid slice"))
-        ):
+        for column, (values, title) in enumerate(((actual, "CFD"), (predicted, label))):
             image = axes[row, column].scatter(
                 positions[:, axes_indices[0]],
                 positions[:, axes_indices[1]],
@@ -153,9 +157,9 @@ def evaluate(model, paths, statistics, device, output):
     for root, name in paths:
         raw = load_case(root, name)
         case = normalize_case(raw, statistics)
-        inputs, positions, _, _, edges = tensors(case, device)
+        inputs, positions, _, surface, edges, ratio = tensors(case, device)
         with torch.no_grad():
-            prediction = model(inputs, positions, edges).cpu().numpy()
+            prediction = model(inputs, positions, edges, (surface, ratio)).cpu().numpy()
         prediction = prediction * (statistics["y_std"] + 1e-8) + statistics["y_mean"]
         row = {"case": name, **field_scores(prediction, raw["y"], raw["surface"])}
         rows.append(row)
@@ -167,7 +171,7 @@ def evaluate(model, paths, statistics, device, output):
             actual=raw["y"],
             prediction=prediction,
         )
-        plot_pressure(raw, prediction, output / f"{stem}.png")
+        plot_pressure(raw, prediction, output / f"{stem}.png", model.kind)
         print(json.dumps(row), flush=True)
     summary = {
         key: float(np.mean([row[key] for row in rows]))
@@ -184,6 +188,11 @@ def main():
     parser.add_argument("--splits", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=150)
+    parser.add_argument(
+        "--model",
+        choices=("gnn_hybrid_slice", *DOMAIN_KINDS),
+        default="gnn_hybrid_slice",
+    )
     parser.add_argument("--validation-interval", type=int, default=10)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument(
@@ -233,7 +242,7 @@ def main():
         },
         "device": torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu",
         "torch_version": str(torch.__version__),
-        "model": "gnn_hybrid_slice",
+        "model": args.model,
         "checkpoint_evaluated": "final.pt",
     }
     (args.output / "config.json").write_text(json.dumps(config, indent=2) + "\n")
